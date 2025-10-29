@@ -2,14 +2,14 @@ const express = require("express");
 const passport = require("passport");
 const jwt = require("jsonwebtoken");
 const User = require("../model/user");
-const { register, login } = require("../controllers/authController");
+const { register, login,verifyEmail} = require("../controllers/authController");
 
 const router = express.Router();
 
 //  Normal Register/Login (for all roles)
 router.post("/register", register);
 router.post("/login", login);
-
+router.post("/verify-otp", verifyEmail);
 //  Google Login (only for clients)
 router.get(
   "/google",
@@ -73,12 +73,12 @@ router.get(
 
 
 
-// Failure redirect
+
 router.get("/failure", (req, res) => {
   res.status(401).json({ message: "❌ Google authentication failed" });
 });
 
-//  Email-Only Login Flow (client only)
+
 router.post("/email", async (req, res) => {
   try {
     const { email } = req.body;
@@ -86,13 +86,12 @@ router.post("/email", async (req, res) => {
 
     let user = await User.findOne({ email });
     if (!user) {
-      //  Automatically register as client
       user = new User({
         name: "New Client",
         email,
         phone: "N/A",
         password: "N/A",
-        role: "client", // hh Force client
+        role: "client", 
         location: "N/A"
       });
       await user.save();
@@ -118,5 +117,46 @@ router.post("/email", async (req, res) => {
     res.status(500).json({ message: "Server error during email login" });
   }
 });
+router.get(
+  "/facebook",
+  (req, res, next) => {
+    const role = req.query.role || "client";
+    if (role !== "client") {
+      return res.status(403).json({ message: "❌ Facebook login allowed only for clients" });
+    }
+    next();
+  },
+  passport.authenticate("facebook", { scope: ["email"] })
+);
 
+router.get(
+  "/facebook/callback",
+  passport.authenticate("facebook", { failureRedirect: "/auth/failure" }),
+  async (req, res) => {
+    try {
+      const facebookUser = req.user;
+
+      const token = jwt.sign(
+        { id: facebookUser._id, role: facebookUser.role },
+        process.env.JWT_SECRET,
+        { expiresIn: "7d" }
+      );
+
+      const frontendUrl = process.env.FRONTEND_URL || "http://localhost:5173";
+      return res.redirect(`${frontendUrl}/client?token=${token}`);
+    } catch (err) {
+      console.error("Facebook Callback Error:", err);
+      res.status(500).json({ message: "Server error during Facebook login" });
+    }
+  }
+);
+
+router.get("/delete-data", (req, res) => {
+  res.send(`
+    <h2>Data Deletion Instructions</h2>
+    <p>If you want to delete your data associated with Fast Response, please email us at 
+    <a href="mailto:codevault.backend@gmail.com">codevault.backend@gmail.com</a> 
+    with your registered email address.</p>
+  `);
+});
 module.exports = router;
