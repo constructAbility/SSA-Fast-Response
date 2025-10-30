@@ -3,7 +3,7 @@ const mongoose = require('mongoose');
 const cors = require('cors');
 const dotenv = require('dotenv');
 const passport = require("passport");
-const session = require("express-session"); // 🆕 Needed for Google OAuth sessions
+const session = require("express-session"); //  Needed for Google OAuth sessions
 
 dotenv.config();
 const app = express();

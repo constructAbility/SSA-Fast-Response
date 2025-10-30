@@ -2,11 +2,7 @@ const express = require("express");
 const passport = require("passport");
 const jwt = require("jsonwebtoken");
 const User = require("../model/user");
-<<<<<<< HEAD
-const { register, login,verifyEmail,registerClient } = require("../controllers/authController");
-=======
-const { register, login,verifyEmail} = require("../controllers/authController");
->>>>>>> b60dede (add facebook)
+const { register, login,verifyEmail,registerClient,registerTechnician } = require("../controllers/authController");
 
 const router = express.Router();
 
@@ -14,24 +10,15 @@ const router = express.Router();
 router.post("/register", register);
 router.post("/login", login);
 router.post("/verify-otp", verifyEmail);
-<<<<<<< HEAD
 
 router.post("/client-register", registerClient );
+router.post("/technician-register", registerTechnician );
 
 
-
-
-
-
-
-
-=======
->>>>>>> b60dede (add facebook)
-//  Google Login (only for clients)
 router.get(
   "/google",
   (req, res, next) => {
-    // Add query param ?role=client to control who can login
+
     const role = req.query.role || "client";
     if (role !== "client") {
       return res.status(403).json({ message: "❌ Google login allowed only for clients" });
@@ -49,17 +36,16 @@ router.get(
     try {
       const googleUser = req.user;
 
-      // Check if user already exists
       let user = await User.findOne({ email: googleUser.emails?.[0]?.value });
 
       if (!user) {
-        // Create new user with full Google profile details
+    
         user = await User.create({
           googleId: googleUser.id,
           name: googleUser.displayName || "",
           firstName: googleUser.name?.givenName || "",
           lastName: googleUser.name?.familyName || "",
-          email: googleUser.emails?.[0]?.value || "",
+          email: googleUser.emails?.[0]?.value || "",                                                                                                                          
           avatar: googleUser.photos?.[0]?.value || "",
           role: "client", // default role
         });
@@ -77,7 +63,7 @@ router.get(
         { expiresIn: "7d" }
       );
 
-      // Redirect to frontend with token
+      
       const frontendUrl = process.env.FRONTEND_URL || "http://localhost:5173";
       return res.redirect(`${frontendUrl}/client?token=${token}`);
     } catch (err) {

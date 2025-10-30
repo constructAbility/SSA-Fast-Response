@@ -2,7 +2,7 @@ const nodemailer = require("nodemailer");
 require("dotenv").config();
 
 // Validate required environment variables
-if (!process.env.SENDGRID_PASS) {
+if (!process.env.SENDGRID_API_KEY) {
   throw new Error("SENDGRID_PASS environment variable is missing");
 }
 if (!process.env.EMAIL_FROM) {
@@ -17,7 +17,7 @@ const transporter = nodemailer.createTransport({
   requireTLS: true, // enforce TLS
   auth: {
     user: "apikey", // literal string "apikey"
-    pass: process.env.SENDGRID_PASS, // your SendGrid API key
+    pass: process.env.SENDGRID_API_KEY, // your SendGrid API key
   },
   tls: {
     rejectUnauthorized: false, // disable for self-signed cert issues, enable in prod if possible
@@ -69,8 +69,4 @@ verifyTransporter().catch(() => {
   console.warn("⚠️ Please check your SMTP configuration and environment variables.");
 });
 
-<<<<<<< HEAD
 module.exports = sendEmail;
-=======
-module.exports = sendEmail;
->>>>>>> b60dede (add facebook)
