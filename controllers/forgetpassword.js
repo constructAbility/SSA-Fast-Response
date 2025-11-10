@@ -1,114 +1,130 @@
 const crypto = require("crypto");
 const bcrypt = require("bcryptjs");
 const User = require("../model/user");
-const sendEmail = require("../utils/sendemail"); 
+const sendEmail = require("../utils/sendemail");
 
-// ✅ 1. Forgot Password — Send OTP
+
 exports.forgotPassword = async (req, res) => {
   try {
     const { email } = req.body;
-    if (!email)
-      return res.status(400).json({ message: "Email is required" });
+    if (!email) return res.status(400).json({ message: "Email is required." });
 
-    // Find user by email
     const user = await User.findOne({ email });
     if (!user)
-      return res.status(404).json({ message: "No account found with this email" });
+      return res.status(404).json({ message: "No account found with this email." });
 
-    // Generate 6-digit OTP
+   
     const otp = crypto.randomInt(100000, 999999).toString();
 
-    // Save OTP and expiry (5 minutes)
+
     user.emailOTP = otp;
     user.emailOTPExpires = Date.now() + 5 * 60 * 1000;
     await user.save();
 
-    // Email content (HTML + text)
+    // Build email content
     const html = `
-      <h2>Password Reset Request</h2>
-      <p>Hello ${user.firstName || user.name || "User"},</p>
-      <p>Your One-Time Password (OTP) for resetting your password is:</p>
-      <h3>${otp}</h3>
-      <p>This OTP will expire in <b>5 minutes</b>.</p>
-      <p>If you did not request a password reset, please ignore this email.</p>
-      <p>– One Step Solution Team</p>
+      <div style="font-family:Arial; background:#f9f9f9; padding:20px; border-radius:8px;">
+        <h2 style="color:#333;">Password Reset Request</h2>
+        <p>Hello <strong>${user.firstName || "User"}</strong>,</p>
+        <p>Your One-Time Password (OTP) for resetting your password is:</p>
+        <h1 style="background:#007bff; color:#fff; padding:10px 20px; border-radius:6px; display:inline-block;">${otp}</h1>
+        <p>This OTP will expire in <b>5 minutes</b>.</p>
+        <p>If you did not request this, please ignore this email.</p>
+        <hr/>
+        <small style="color:#888;">© One Step Solution Team</small>
+      </div>
     `;
 
-    await sendEmail(user.email, "Password Reset OTP", html);
+    // Send OTP email
+    await sendEmail(user.email, "Password Reset OTP - One Step Solution", html);
+    console.log(`✅ Password reset OTP sent to ${user.email}`);
 
     res.status(200).json({
       message: "OTP sent successfully to your email.",
     });
   } catch (err) {
-    console.error("Forgot Password Error:", err);
+    console.error("❌ Forgot Password Error:", err.message);
     res.status(500).json({
-      message: "Server error during password reset.",
-      error: err.message,
+      message: "Server error while sending OTP.",
     });
   }
 };
 
-// ✅ 2. Verify OTP
+
 exports.verifyOTP = async (req, res) => {
   try {
     const { email, otp } = req.body;
     if (!email || !otp)
-      return res.status(400).json({ message: "Email and OTP required" });
+      return res.status(400).json({ message: "Email and OTP are required." });
 
     const user = await User.findOne({ email });
-    if (!user)
-      return res.status(404).json({ message: "User not found" });
+    if (!user) return res.status(404).json({ message: "User not found." });
 
     if (!user.emailOTP || user.emailOTP !== otp)
-      return res.status(400).json({ message: "Invalid OTP" });
+      return res.status(400).json({ message: "Invalid OTP." });
 
-    if (user.emailOTPExpires < Date.now())
-      return res.status(400).json({ message: "OTP expired" });
+    if (Date.now() > user.emailOTPExpires)
+      return res.status(400).json({ message: "OTP expired. Please request a new one." });
 
-    // Optional: mark email verified
+    // Optional: mark email verified if needed
     user.isEmailVerified = true;
     await user.save();
 
     res.status(200).json({ message: "OTP verified successfully." });
   } catch (err) {
-    console.error("Verify OTP Error:", err);
-    res.status(500).json({ message: "Server error" });
+    console.error("❌ Verify OTP Error:", err.message);
+    res.status(500).json({ message: "Server error during OTP verification." });
   }
 };
 
-// ✅ 3. Reset Password
 exports.resetPassword = async (req, res) => {
   try {
     const { email, otp, newPassword, confirmPassword } = req.body;
+
     if (!email || !otp || !newPassword || !confirmPassword)
-      return res.status(400).json({ message: "All fields are required" });
+      return res.status(400).json({ message: "All fields are required." });
 
     if (newPassword !== confirmPassword)
-      return res.status(400).json({ message: "Passwords do not match" });
+      return res.status(400).json({ message: "Passwords do not match." });
 
     const user = await User.findOne({ email });
-    if (!user)
-      return res.status(404).json({ message: "User not found" });
+    if (!user) return res.status(404).json({ message: "User not found." });
 
     if (!user.emailOTP || user.emailOTP !== otp)
-      return res.status(400).json({ message: "Invalid OTP" });
+      return res.status(400).json({ message: "Invalid OTP." });
 
-    if (user.emailOTPExpires < Date.now())
-      return res.status(400).json({ message: "OTP expired" });
+    if (Date.now() > user.emailOTPExpires)
+      return res.status(400).json({ message: "OTP expired. Please request again." });
 
     // Hash the new password
-    const hashed = await bcrypt.hash(newPassword, 10);
-    user.password = hashed;
+    const hashedPassword = await bcrypt.hash(newPassword, 10);
+    user.password = hashedPassword;
 
-    // Clear OTP fields
+    // Clear OTP data
     user.emailOTP = undefined;
     user.emailOTPExpires = undefined;
 
     await user.save();
 
-    res.status(200).json({ message: "Password reset successful." });
+    res.status(200).json({ message: "Password reset successful. You can now log in." });
   } catch (err) {
-    console.error("Reset Password Error:", err);
-    res.status(500).json({ message: "Server error" });
+    console.error("❌ Reset Password Error:", err.message);
+    res.status(500).json({ message: "Server error during password reset." });
+  }
+};
+
+exports.resendOTP = async (req, res) => {
+  try {
+    const { email } = req.body;
+    if (!email) return res.status(400).json({ message: "Email required" });
+
+    const user = await User.findOne({ email });
+    if (!user) return res.status(404).json({ message: "User not found" });
+
+    await sendVerificationOTP(user, email, user.firstName);
+    res.status(200).json({ message: "OTP resent successfully." });
+  } catch (err) {
+    console.error("Resend OTP Error:", err.message);
+    res.status(500).json({ message: "Failed to resend OTP" });
   }
 };

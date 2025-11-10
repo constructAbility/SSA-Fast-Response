@@ -1,0 +1,46 @@
+ create the technician job count 
+    open - by today 
+    compeleted -today 
+    compeleted- this  week 
+
+changed  the complete work status after adding  photo ,
+      added  send the email with bill pdf and paylink,
+changed the start work after adding the photo 
+        
+
+
+adding the notification part for technician and client also 
+        - showning the new notice about to technician 
+               1.1 compeleted work 
+               1.2 in - progress 
+               1.3 open jobs / new work request  
+    for client -
+                1- requesting work success submit 
+                2- shown all status change about work  
+                3- payment done 
+                4- email send notification
+         show in page of notification
+         
+======================================================================================================
+ADDING THE PART OF THE 
+                        change into booking section that the
+                              - take time and date 
+                              - address will be the autofetch of the registation time 
+                              - 
+
+adding the section of mejorment in the booking section from client site 
+                        - taking the unit in number like 10 cm ,m etc
+                        - taking the number of sq feet of the area
+                        -taking the other senable thnks 
+
+                after this give this to technician while check the order 
+                        
+
+add the part of technician notification and job taken like approve c
+                        - adding/create a controller the part of techinician can check work 
+                        - adding approve work once approve work 
+                        -update to client that work has been taken 
+
+
+2 qt geb ne
+  

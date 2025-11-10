@@ -12,70 +12,29 @@ const generateToken = (user) => {
 
 
 const sendVerificationOTP = async (user, email, name) => {
-  const otp = Math.floor(100000 + Math.random() * 900000).toString();
-  user.emailOTP = otp;
-  user.emailOTPExpires = Date.now() + 10 * 60 * 1000; // 10 minutes
-
-  await user.save();
-
-  const html = `
-    <div style="font-family:Arial; text-align:center;">
-      <h2>Verify your email</h2>
-      <p>Hello ${name || "User"},</p>
-      <p>Your OTP is:</p>
-      <h1>${otp}</h1>
-      <p>This code will expire in 10 minutes.</p>
-    </div>
-  `;
-
-  await sendEmail(email, "Your OTP Code", html);
-  // console.log(`✅ OTP sent to ${email}: ${otp}`);
-};
-
-
-exports.register = async (req, res) => {
   try {
-<<<<<<< HEAD
-    const { firstName, lastName, email, phone, password, confirmPassword } = req.body;
-=======
-    const { firstName, lastName, email, phone, password, confirmPassword ,...rest} = req.body;
->>>>>>> recovery
-
-    if (!firstName || !lastName || !email || !phone || !password || !confirmPassword)
-      return res.status(400).json({ message: "All fields are required." });
-
-    if (password !== confirmPassword)
-      return res.status(400).json({ message: "Passwords do not match." });
-
-    let user = await User.findOne({ email });
-
-    if (user && user.password && user.isEmailVerified)
-      return res.status(400).json({ message: "Email already registered." });
-
-    if (!user) user = new User({ firstName, lastName, email, phone });
-
-    const otpExpired = user.emailOTPExpires && user.emailOTPExpires < Date.now();
-
-    if (!user.isEmailVerified || otpExpired) {
-      await sendVerificationOTP(user, email, firstName);
-      return res
-        .status(200)
-        .json({ message: "OTP sent. Verify your email to complete registration.", email });
-    }
-
-    const hashedPassword = await bcrypt.hash(password, 10);
-    user.password = hashedPassword;
-    user.isEmailVerified = true;
-    user.emailOTP = null;
-    user.emailOTPExpires = null;
-
+    const otp = Math.floor(100000 + Math.random() * 900000).toString();
+    user.emailOTP = otp;
+    user.emailOTPExpires = Date.now() + 10 * 60 * 1000; // 10 minutes
     await user.save();
-    const token = generateToken(user);
 
-    return res.status(201).json({ message: "Registered successfully.", token, user });
+    const html = `
+      <div style="font-family:Arial, text-align:center; background:#f9f9f9; padding:20px; border-radius:8px;">
+        <h2 style="color:#333;">Email Verification</h2>
+        <p>Hello <strong>${name || "User"}</strong>,</p>
+        <p>Your OTP for email verification is:</p>
+        <h1 style="background:#007bff; color:white; display:inline-block; padding:10px 20px; border-radius:6px;">${otp}</h1>
+        <p>This code will expire in <b>10 minutes</b>.</p>
+        <hr/>
+        <small style="color:#888;">© One Step Solution</small>
+      </div>
+    `;
+
+    await sendEmail(email, "Your OTP Code - One Step Solution", html);
+    console.log(`✅ OTP ${otp} sent to ${email}`);
   } catch (err) {
-    console.error("Registration error:", err);
-    return res.status(500).json({ message: "Registration failed. Please try again later." });
+    console.error("❌ Error sending OTP email:", err.message);
+    throw new Error("Failed to send OTP email. Please try again later.");
   }
 };
 
@@ -91,31 +50,41 @@ exports.registerClient = async (req, res) => {
       return res.status(400).json({ message: "Passwords do not match." });
 
     let user = await User.findOne({ email });
-    if (user && user.isEmailVerified)
-      return res.status(400).json({ message: "Email already registered." });
 
-    if (!user) {
-      user = new User({ firstName, lastName, email, phone, role: "client" });
-    } else {
-      user.firstName = firstName;
-      user.lastName = lastName;
-      user.phone = phone;
-      user.role = "client";
+    // If already verified
+    if (user && user.isEmailVerified) {
+      return res.status(400).json({ message: "Email already registered and verified." });
     }
 
-    // Remove non-client fields
-    user.set({
-      specialization: undefined,
-      experience: undefined,
-      responsibility: undefined,
-      permissions: undefined,
-      department: undefined,
-      availability: undefined,
-      onDuty: undefined,
-      ratings: undefined,
-      totalJobs: undefined,
-      technicianStatus: undefined,
-    });
+    // Hash password if new or updating
+    const hashedPassword = await bcrypt.hash(password, 10);
+
+    if (!user) {
+      user = new User({
+        firstName,
+        lastName,
+        email,
+        phone,
+        role: "client",
+        password: hashedPassword,
+      });
+    } else {
+      // Update existing unverified record
+      user.set({
+        firstName,
+        lastName,
+        phone,
+        password: hashedPassword,
+        role: "client",
+      });
+    }
+
+    // Clear technician fields if exist
+    user.specialization = undefined;
+    user.experience = undefined;
+    user.availability = undefined;
+    user.onDuty = undefined;
+    user.technicianStatus = undefined;
 
     await sendVerificationOTP(user, email, firstName);
 
@@ -124,14 +93,10 @@ exports.registerClient = async (req, res) => {
       email,
     });
   } catch (err) {
-    console.error("Client registration error:", err);
+    console.error("❌ Client registration error:", err.message);
     res.status(500).json({ message: "Registration failed. Try again later." });
   }
 };
-
-
-<<<<<<< HEAD
-=======
 
 exports.registerTechnician = async (req, res) => {
   try {
@@ -147,7 +112,6 @@ exports.registerTechnician = async (req, res) => {
       location,
     } = req.body;
 
-    // 🔹 Basic validation
     if (!firstName || !lastName || !email || !phone || !password || !confirmPassword)
       return res.status(400).json({ message: "All fields are required." });
 
@@ -155,28 +119,27 @@ exports.registerTechnician = async (req, res) => {
       return res.status(400).json({ message: "Passwords do not match." });
 
     if (!specialization || !experience)
-      return res.status(400).json({ message: "Specialization and experience are required." });
+      return res
+        .status(400)
+        .json({ message: "Specialization and experience are required." });
 
     let user = await User.findOne({ email });
 
-    // 🔹 Prevent duplicate verified accounts
     if (user && user.isEmailVerified)
-      return res.status(400).json({ message: "Email already registered as verified." });
+      return res.status(400).json({ message: "Email already registered and verified." });
 
-    // 🔹 Hash password before sending OTP
     const hashedPassword = await bcrypt.hash(password, 10);
 
     if (!user) {
-      // Create new technician user
       user = new User({
         firstName,
         lastName,
         email,
         phone,
+        password: hashedPassword,
         role: "technician",
-        password: hashedPassword, // ✅ store it
         specialization: Array.isArray(specialization)
-          ? specialization
+          ? specialization.map((s) => s.trim().toLowerCase())
           : specialization.split(",").map((s) => s.trim().toLowerCase()),
         experience,
         location,
@@ -185,22 +148,24 @@ exports.registerTechnician = async (req, res) => {
         technicianStatus: "available",
       });
     } else {
-      // Update existing unverified user
+    
       user.set({
         firstName,
         lastName,
         phone,
-        role: "technician",
-        password: hashedPassword, // ✅ update it
+        password: hashedPassword,
         specialization: Array.isArray(specialization)
-          ? specialization
+          ? specialization.map((s) => s.trim().toLowerCase())
           : specialization.split(",").map((s) => s.trim().toLowerCase()),
         experience,
         location,
+        availability: true,
+        onDuty: false,
+        technicianStatus: "available",
+        role: "technician",
       });
     }
 
-    // 🔹 Send OTP
     await sendVerificationOTP(user, email, firstName);
 
     res.status(200).json({
@@ -208,17 +173,15 @@ exports.registerTechnician = async (req, res) => {
       email,
     });
   } catch (err) {
-    console.error("Technician registration error:", err);
+    console.error("❌ Technician registration error:", err.message);
     res.status(500).json({ message: "Registration failed. Try again later." });
   }
 };
 
 
->>>>>>> recovery
 exports.verifyEmail = async (req, res) => {
   try {
     const { email, otp } = req.body;
-
     if (!email || !otp)
       return res.status(400).json({ message: "Email and OTP are required." });
 
@@ -240,63 +203,44 @@ exports.verifyEmail = async (req, res) => {
     user.emailOTPExpires = undefined;
     await user.save();
 
-    res.status(200).json({ message: "Email verified successfully! You can now login." });
+    res.status(200).json({ message: "Email verified successfully! You can now log in." });
   } catch (err) {
-    console.error("Error during email verification:", err);
+    console.error("Email verification error:", err);
     res.status(500).json({ message: "Server error during verification." });
   }
 };
 
-
-<<<<<<< HEAD
-=======
-
-exports.setPassword = async (req, res) => {
+exports.resendOTP = async (req, res) => {
   try {
-    const { email, password, confirmPassword } = req.body;
-
-    if (!email || !password || !confirmPassword)
-      return res.status(400).json({ message: "All fields required." });
-
-    if (password !== confirmPassword)
-      return res.status(400).json({ message: "Passwords do not match." });
+    const { email } = req.body;
+    if (!email) return res.status(400).json({ message: "Email required" });
 
     const user = await User.findOne({ email });
-    if (!user)
-      return res.status(404).json({ message: "User not found." });
+    if (!user) return res.status(404).json({ message: "User not found" });
 
-    const hashedPassword = await bcrypt.hash(password, 10);
-    user.password = hashedPassword;
-    await user.save();
-
-    res.status(200).json({ message: "Password set successfully. You can now log in normally." });
+    await sendVerificationOTP(user, email, user.firstName);
+    res.status(200).json({ message: "OTP resent successfully." });
   } catch (err) {
-    console.error("Set Password Error:", err);
-    res.status(500).json({ message: "Server error while setting password." });
+    console.error("Resend OTP Error:", err.message);
+    res.status(500).json({ message: "Failed to resend OTP" });
   }
 };
 
 
-
->>>>>>> recovery
 exports.login = async (req, res) => {
   try {
     const { email, password } = req.body;
-
     if (!email || !password)
       return res.status(400).json({ message: "Email and password required." });
 
     const user = await User.findOne({ email });
     if (!user)
       return res.status(400).json({ message: "Invalid credentials." });
-<<<<<<< HEAD
-=======
 
     if (!user.password)
       return res.status(400).json({
-        message: "This account was created without a password. Please complete registration.",
+        message: "This account was created via Google/Facebook or OTP login. Please use that method.",
       });
->>>>>>> recovery
 
     const match = await bcrypt.compare(password, user.password);
     if (!match)
@@ -306,20 +250,80 @@ exports.login = async (req, res) => {
     res.json({ message: "Login successful", token, user });
   } catch (err) {
     console.error("Login Error:", err);
-    res.status(500).json({ message: "Server error" });
+    res.status(500).json({ message: "Server error during login." });
   }
 };
 
 
-<<<<<<< HEAD
-=======
 
->>>>>>> recovery
 exports.getProfile = async (req, res) => {
   try {
-    res.json({ user: req.user });
+  
+    if (!req.user) {
+      return res.status(401).json({ message: "Unauthorized access" });
+    }
+
+    
+    const user = await User.findById(req.user._id).select("-password");
+    if (!user) return res.status(404).json({ message: "User not found" });
+
+    let profile = {};
+
+    if (user.role === "technician") {
+      profile = {
+        name: `${user.firstName} ${user.lastName}`,
+        role: user.role,
+        email: user.email,
+        phone: user.phone,
+        location: user.location,
+        specialization: user.specialization,
+        experience: user.experience,
+
+      };
+    }
+
+    
+    else if (user.role === "client") {
+      profile = {
+        name: `${user.firstName} ${user.lastName}`,
+        role: user.role,
+        email: user.email,
+        phone: user.phone,
+        location: user.location || "Not specified",
+      };
+    }
+
+  
+
+    res.status(200).json({
+      success: true,
+      profile,
+    });
   } catch (err) {
-    console.error("Profile Error:", err);
+    console.error("❌ Profile Fetch Error:", err);
     res.status(500).json({ message: "Server error" });
+  }
+};
+
+exports.getTechnicianSummary = async (req, res) => {
+  try {
+    const technicianId = req.user._id; 
+
+    const works = await Work.find({ technician: technicianId })
+      .populate("client", "name phone email")
+      .populate("supervisor", "name")
+      .sort({ createdAt: -1 });
+
+    res.status(200).json({
+      success: true,
+      count: works.length,
+      works,
+    });
+  } catch (err) {
+    console.error("❌ Technician Summary Error:", err);
+    res.status(500).json({
+      success: false,
+      message: "Unable to fetch technician summary",
+    });
   }
 };

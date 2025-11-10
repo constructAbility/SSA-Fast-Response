@@ -1,72 +1,44 @@
-const nodemailer = require("nodemailer");
+const sgMail = require("@sendgrid/mail");
 require("dotenv").config();
 
-// Validate required environment variables
 if (!process.env.SENDGRID_API_KEY) {
-  throw new Error("SENDGRID_PASS environment variable is missing");
+  throw new Error("SENDGRID_API_KEY environment variable is missing");
 }
 if (!process.env.EMAIL_FROM) {
   throw new Error("EMAIL_FROM environment variable is missing");
 }
 
-// Create transporter using SendGrid SMTP
-const transporter = nodemailer.createTransport({
-  host: "smtp.sendgrid.net",
-  port: 587, // recommended port for TLS
-  secure: false, // false for STARTTLS
-  requireTLS: true, // enforce TLS
-  auth: {
-    user: "apikey", // literal string "apikey"
-    pass: process.env.SENDGRID_API_KEY, // your SendGrid API key
-  },
-  tls: {
-    rejectUnauthorized: false, // disable for self-signed cert issues, enable in prod if possible
-  },
-});
+sgMail.setApiKey(process.env.SENDGRID_API_KEY);
 
-// Verify transporter connection as a Promise
-const verifyTransporter = async () => {
-  try {
-    await transporter.verify();
-    console.log("✅ Transporter verified — ready to send emails.");
-  } catch (error) {
-    console.error("❌ Transporter verification failed:", error);
-    throw error;
-  }
-};
 
-// Convert HTML to text fallback (basic)
-const htmlToText = (html) => {
-  return html.replace(/<(?:.|\n)*?>/gm, "") || "Your email client does not support HTML messages.";
-};
-
-// Send email function
-const sendEmail = async (to, subject, html) => {
+const sendEmail = async (to, subject, html, attachments = []) => {
   if (!to) throw new Error("Recipient email is required");
   if (!subject) throw new Error("Email subject is required");
   if (!html) throw new Error("Email HTML content is required");
 
-  try {
-    const info = await transporter.sendMail({
-      from: `"One Step Solution" <${process.env.EMAIL_FROM}>`, // verified sender
-      to,
-      subject,
-      text: htmlToText(html),
-      html,
-    });
+  const msg = {
+    to,
+    from: {
+      name: "Fast Response",
+      email: process.env.EMAIL_FROM,
+    },
+    subject,
+    html,
+  };
 
-    console.log(` Email sent successfully to: ${to}`);
-    console.log(` Message ID: ${info.messageId}`);
-    return info;
+  // ✅ Include attachments if present
+  if (attachments && attachments.length > 0) {
+    msg.attachments = attachments;
+  }
+
+  try {
+    const response = await sgMail.send(msg);
+    console.log("✅ Email sent successfully to:", to);
+    return response;
   } catch (error) {
-    console.error("❌ Failed to send email:", error.message);
+    console.error("❌ Failed to send email:", error.response?.body || error.message);
     throw error;
   }
 };
-
-// Immediately verify transporter on module load (optional)
-verifyTransporter().catch(() => {
-  console.warn("⚠️ Please check your SMTP configuration and environment variables.");
-});
 
 module.exports = sendEmail;

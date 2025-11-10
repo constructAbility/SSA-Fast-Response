@@ -4,9 +4,7 @@ const User = require("../model/user");
 const Booking=require("../model/BookOrder")
 const axios = require("axios");
 const AdminNotification=require('../model/adminnotification')
-
-
-// ✅ 1. Get all admin notifications (with optional status filter + pagination)
+const Notification=require('../model/Notification')
 exports.getAdminNotifications = async (req, res) => {
   try {
     const { status, page = 1, limit = 20 } = req.query;
@@ -159,5 +157,26 @@ exports.resolveNotification = async (req, res) => {
   } catch (err) {
     console.error("Resolve Notification Error:", err.message);
     res.status(500).json({ message: "Server error while resolving notification" });
+  }
+};
+
+
+
+
+
+exports.sendNotification = async (userId, role, title, message, type = "info", link = "") => {
+  try {
+    const notification = new Notification({
+      user: userId,
+      role,
+      title,
+      message,
+      type,
+      link,
+    });
+    await notification.save();
+    return notification;
+  } catch (err) {
+    console.error("❌ Notification Error:", err);
   }
 };

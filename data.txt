@@ -2,7 +2,7 @@ keyapi_pass=SG.z7pgTIfTQrm4xiLuBcM48A.wRaNCEzmFZgUavwD_dv8U9yH3v30E2rQqC9r_ubWFV
 
 keysengr_id=z7pgTIfTQrm4xiLuBcM48A
 
-
+=========================================================================================================================
 {
  "workId":"68e7b5ef314efad5098d4c8d",
    "technicianId": "68e6027914784cc7394ec6cd",
@@ -10,10 +10,18 @@ keysengr_id=z7pgTIfTQrm4xiLuBcM48A
   
     // optional; agar technician assign karna hai to, warna hata dena
 }
+====================================================================================================================
+using part 
+for location -> ORS(openroutservice) while testing 
+for 
 
+====================================================================================================================
 sendgrid=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
 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
+====================================================================================================================
 
+
+=======================================================================================================================
 const mongoose= require('mongoose')
 const Work = require("../model/work");
 const User = require("../model/user");
@@ -332,4 +340,4 @@ exports.WorkComplete = async (req, res) => {
     res.status(500).json({ message: "Server error" });
   }
 };
-
+===================================================================================================================

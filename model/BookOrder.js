@@ -3,7 +3,9 @@ const mongoose = require("mongoose");
 const bookingSchema = new mongoose.Schema({
   user: { type: mongoose.Schema.Types.ObjectId, ref: 'User', required: true },
   technician: { type: mongoose.Schema.Types.ObjectId, ref: 'User', required: true },
-  serviceType: { type: mongoose.Schema.Types.ObjectId, ref: 'User' },
+  serviceCharge:{type:Number},
+  serviceType: { type: String, required: true },
+
   description: String,
   location: String,
    assignedTechnician: { type: mongoose.Schema.Types.ObjectId, ref: "User" },

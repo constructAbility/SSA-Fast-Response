@@ -4,6 +4,11 @@ const User = require("../model/user");
 const Booking=require("../model/BookOrder")
 const AdminNotification=require('../model/adminnotification')
 const axios = require("axios");
+const fs = require("fs");
+const PDFDocument = require("pdfkit");
+const nodemailer = require("nodemailer");
+const sendemail=require('../utils/sendemail')
+const { uploadToCloudinary } = require("../utils/cloudinaryUpload");
 const generateToken = (id) => {
   return `REQ-${new Date().getFullYear()}-${String(id).padStart(5, '0')}`;
 };
@@ -15,6 +20,7 @@ exports.createWork = async (req, res) => {
       specialization, 
       description, 
       location, 
+      serviceCharge,
       technicianId, 
       lat, 
       lng 
@@ -50,6 +56,7 @@ exports.createWork = async (req, res) => {
       serviceType,
       specialization: specs,
       description,
+      serviceCharge,
       location: normalizedLocation,
       coordinates: { lat, lng },
       assignedTechnician: technicianId || null,
@@ -87,6 +94,15 @@ exports.createWork = async (req, res) => {
         ? techniciansWithStatus
         : "No matching technicians found"
     });
+    await sendNotification(
+  work.client,
+  "client",
+  "Work Request Submitted",
+  `Your work request (${work.serviceType}) has been successfully submitted.`,
+  "success",
+  `/client/work/${work._id}`
+);
+
 
   } catch (err) {
     console.error("Work Creation Error:", err);
@@ -177,112 +193,123 @@ exports.findMatchingTechnicians = async (req, res) => {
   }
 };
 
-// adjust path/name if needed
+
 
 
 exports.bookTechnician = async (req, res) => {
   try {
-    const { workId, technicianId, serviceType, description, location, date } = req.body;
+    const { workId, technicianId, serviceType, serviceCharge, description, date, time } = req.body;
     const userId = req.user._id;
 
-    if (!technicianId || !workId) {
+    
+    if (!technicianId || !workId)
       return res.status(400).json({ message: "Work ID and Technician ID are required" });
+
+    
+    let workDate;
+    if (date && time) {
+      workDate = new Date(`${date}T${time}`);
+    } else if (date) {
+      workDate = new Date(date);
+    } else {
+      workDate = new Date();
     }
 
-    const workDate = date ? new Date(date) : new Date();
-    if (isNaN(workDate.getTime())) {
-      return res.status(400).json({ message: "Invalid date format" });
-    }
+    if (isNaN(workDate.getTime()))
+      return res.status(400).json({ message: "Invalid date or time format" });
 
-    //  Technician check
+    
+    const client = await User.findById(userId);
+    if (!client) return res.status(404).json({ message: "Client not found" });
+
+   
     const technician = await User.findById(technicianId);
-    if (!technician) {
-      return res.status(404).json({ message: "Technician not found" });
-    }
+    if (!technician) return res.status(404).json({ message: "Technician not found" });
 
-    // 🚫 Conflict check — ensure technician is not already working
+   
     const conflict = await Work.findOne({
       assignedTechnician: technicianId,
       status: { $in: ["taken", "dispatch", "inprogress"] }
     });
-    if (conflict) {
+    if (conflict)
       return res.status(400).json({ message: "Technician already assigned to another work" });
-    }
 
-    //  Create booking record
+ 
     const booking = await Booking.create({
       user: userId,
       technician: technicianId,
       serviceType,
+      serviceCharge,
       description,
-      location,
+      location: client.location || "Not available",
+      address: client.address || "Not available",
       date: workDate,
-      status: "open"
+      status: "open",
     });
 
-    //  Assign technician to work
+    
     const updatedWork = await Work.findByIdAndUpdate(
       workId,
-      {
-        assignedTechnician: technicianId,
-        status: "taken"
-      },
+      { assignedTechnician: technicianId, status: "taken" },
       { new: true }
     );
+    if (!updatedWork) return res.status(404).json({ message: "Work not found for assignment" });
 
-    if (!updatedWork) {
-      return res.status(404).json({ message: "Work not found for assignment" });
-    }
-
-    //  Update technician status to dispatched (they got a new work)
+  
     await User.findByIdAndUpdate(technicianId, {
       technicianStatus: "dispatched",
       onDuty: true,
-      $inc: { totalJobs: 1 }
+      $inc: { totalJobs: 1 },
     });
 
-    // 🔹 Optional: Calculate ETA if coordinates are available
-    let etaMessage = null;
-    if (technician.coordinates?.lat && technician.coordinates?.lng && updatedWork.coordinates?.lat && updatedWork.coordinates?.lng) {
+
+    let etaMessage = "ETA not available";
+    const googleKey = process.env.GOOGLE_MAPS_API_KEY;
+
+    const techC = technician.coordinates;
+    const workC = updatedWork.coordinates;
+
+    if (techC?.lat && techC?.lng && workC?.lat && workC?.lng) {
+      const origin = `${parseFloat(techC.lat)},${parseFloat(techC.lng)}`;
+      const destination = `${parseFloat(workC.lat)},${parseFloat(workC.lng)}`;
+      const url = `https://maps.googleapis.com/maps/api/distancematrix/json?origins=${origin}&destinations=${destination}&mode=driving&departure_time=now&traffic_model=best_guess&key=${googleKey}`;
+
       try {
-        const { lat: techLat, lng: techLng } = technician.coordinates;
-        const { lat: clientLat, lng: clientLng } = updatedWork.coordinates;
-
-        const orsKey = process.env.ORS_KEY; //  ensure it's uppercase in .env
-        const url = `https://api.openrouteservice.org/v2/directions/driving-car?api_key=${orsKey}&start=${techLng},${techLat}&end=${clientLng},${clientLat}`;
         const resp = await axios.get(url);
-
-        const seconds = resp.data.features[0].properties.summary.duration;
-        const minutes = Math.round(seconds / 60);
-        etaMessage = `Technician ${technician.name} will arrive in approximately ${minutes} minutes.`;
+        const eta = resp.data?.rows?.[0]?.elements?.[0];
+        if (eta?.status === "OK") {
+          const minutes = Math.round(eta.duration_in_traffic?.value / 60);
+          etaMessage = `Technician ${technician.name} will arrive in approximately ${minutes} minutes (live traffic ETA).`;
+        }
       } catch (err) {
         console.log("ETA calculation failed:", err.message);
       }
     }
 
-    //  Response
-    return res.status(201).json({
-      message: "Technician assigned successfully. Awaiting technician acceptance.",
+   
+    res.status(201).json({
+      message: "Technician booked successfully.",
       booking,
       work: updatedWork,
       technicianStatus: "dispatched",
-      eta: etaMessage || "ETA not available"
+      eta: etaMessage,
     });
-
   } catch (err) {
     console.error("Book Technician Error:", err);
-    res.status(500).json({ message: "Server error" });
+    res.status(500).json({ message: "Server error while booking technician" });
   }
 };
 
 
-//  Technician starts work
+
+
+
 exports.WorkStart = async (req, res) => {
   try {
     const { workId } = req.body;
     const technicianId = req.user._id;
+    const beforePhoto = req.file; // 📸 Multer will store file here
 
-    
     if (!workId) {
       return res.status(400).json({ message: "Work ID is required" });
     }
@@ -296,19 +323,48 @@ exports.WorkStart = async (req, res) => {
       return res.status(403).json({ message: "You are not assigned to this work" });
     }
 
-    //  Update work to inprogress
+    // ✅ Upload before photo (Cloudinary or local)
+    let beforePhotoUrl = "";
+    if (beforePhoto) {
+      // 📤 Cloudinary upload
+      const uploadRes = await uploadToCloudinary(beforePhoto.path, "work_before_photos");
+      beforePhotoUrl = uploadRes.secure_url;
+
+      // OR if local:
+      // beforePhotoUrl = `/uploads/${beforePhoto.filename}`;
+    }
+
+    // ✅ Update work status and save photo
     work.status = "inprogress";
     work.startedAt = new Date();
+    work.beforephoto = beforePhotoUrl; // ✅ Save to DB
     await work.save();
 
-    //  Update technician’s personal status
+    // ✅ Update technician’s personal status
     await User.findByIdAndUpdate(technicianId, {
       technicianStatus: "inprogress",
       onDuty: true,
-      availability: false
+      availability: false,
     });
+await sendNotification(
+  technicianId,
+  "technician",
+  "Job Status Updated",
+  `You have started work (${work.serviceType}).`,
+  "info",
+  `/technician/work/${work._id}`
+);
 
-    //  Update booking status also
+await sendNotification(
+  work.client,
+  "client",
+  "Work In Progress",
+  `Your job (${work.serviceType}) has been marked as in-progress.`,
+  "info",
+  `/client/work/${work._id}`
+);
+
+    // ✅ Update related booking if any
     await Booking.findOneAndUpdate(
       { technician: technicianId, user: work.client, status: { $in: ["open", "taken", "dispatch"] } },
       { status: "inprogress" }
@@ -316,62 +372,157 @@ exports.WorkStart = async (req, res) => {
 
     res.status(200).json({
       message: "Technician started the work. Status set to in-progress.",
-      work
+      work,
+      beforePhoto: beforePhotoUrl,
     });
   } catch (err) {
-    console.error("Work Start Error:", err);
+    console.error("❌ Work Start Error:", err);
     res.status(500).json({ message: "Server error" });
   }
 };
 
-// 🔹 Technician completes work
+
+
+
 exports.WorkComplete = async (req, res) => {
   try {
-    const { workId } = req.body;
+    const { workId, usedMaterials, serviceCharge, total, notes } = req.body;
     const technicianId = req.user._id;
+    const afterphoto = req.file;
 
-    if (!workId) {
-      return res.status(400).json({ message: "Work ID is required" });
-    }
+    if (!workId) return res.status(400).json({ message: "Work ID is required" });
 
-    const work = await Work.findById(workId);
-    if (!work) {
-      return res.status(404).json({ message: "Work not found" });
-    }
+    const work = await Work.findById(workId).populate("client");
+    if (!work) return res.status(404).json({ message: "Work not found" });
 
     if (String(work.assignedTechnician) !== String(technicianId)) {
       return res.status(403).json({ message: "You are not assigned to this work" });
     }
 
-    // Update work to completed
+ 
+    let afterPhotoUrl = "";
+    if (afterphoto) {
+      const uploadRes = await uploadToCloudinary(afterphoto.path, "work_after_photos");
+      afterPhotoUrl = uploadRes.secure_url;
+    }
+
+    let subtotal = serviceCharge || 0;
+    if (Array.isArray(usedMaterials)) {
+      usedMaterials.forEach((item) => {
+        subtotal += item.quantity * item.price;
+      });
+    }
+
+    
+    const invoiceNumber = `INV-${new Date().getFullYear()}-${Math.floor(1000 + Math.random() * 9000)}`;
+    if (!fs.existsSync("./invoices")) fs.mkdirSync("./invoices");
+    const filePath = `./invoices/${invoiceNumber}.pdf`;
+
+    await new Promise((resolve, reject) => {
+      const doc = new PDFDocument();
+      const stream = fs.createWriteStream(filePath);
+      doc.pipe(stream);
+
+      doc.fontSize(20).text("One Step Solution", { align: "center" });
+      doc.moveDown();
+      doc.fontSize(14).text("Service Completion Invoice", { align: "center" });
+      doc.moveDown();
+
+      doc.fontSize(12).text(`Invoice #: ${invoiceNumber}`);
+      doc.text(`Date: ${new Date().toLocaleDateString()}`);
+      doc.text(`Client: ${work.client.firstName} ${work.client.lastName}`);
+      doc.text(`Email: ${work.client.email}`);
+      doc.text(`Work ID: ${work._id}`);
+      doc.moveDown();
+
+      doc.font("Helvetica-Bold").text("Used Materials:");
+      doc.font("Helvetica");
+      if (usedMaterials?.length) {
+        usedMaterials.forEach((item) => {
+          doc.text(`${item.name} - Qty: ${item.quantity} × ₹${item.price} = ₹${item.quantity * item.price}`);
+        });
+      } else {
+        doc.text("No materials used.");
+      }
+
+      doc.moveDown();
+      doc.text(`Service Charge: ₹${serviceCharge || 0}`);
+      doc.text(`Subtotal: ₹${subtotal}`);
+      doc.text(`Total: ₹${total || subtotal}`);
+      doc.moveDown();
+      doc.text(`Notes: ${notes || "N/A"}`);
+
+      doc.end();
+
+      stream.on("finish", resolve);
+      stream.on("error", reject);
+    });
+
+
     work.status = "completed";
     work.completedAt = new Date();
+    work.invoice = { invoiceNumber, usedMaterials, serviceCharge, subtotal, total, pdfUrl: filePath };
+    work.afterphoto = afterPhotoUrl; 
     await work.save();
 
-    //  Update booking status to completed
-    await Booking.findOneAndUpdate(
-      {
-        technician: technicianId,
-        user: work.client,
-        status: { $ne: "completed" }
-      },
-      { status: "completed" },
-      { new: true }
+   
+    const paymentLink = `https://payment.one-step-solution.in/pay?workId=${work._id}`;
+    const pdfBuffer = fs.readFileSync(filePath);
+      const attachments = [
+        {
+          content: pdfBuffer.toString("base64"),
+          filename: `${invoiceNumber}.pdf`,
+          type: "application/pdf",
+          disposition: "attachment",
+        },
+      ];
+   
+    await sendemail(
+      work.client.email,
+      `Service Completed - ${invoiceNumber}`,
+      `
+      <p>Hello ${work.client.firstName},</p>
+      <p>Your service has been successfully completed by our technician.</p>
+      <p><b>Total Bill: ₹${total || subtotal}</b></p>
+      <p>You can make the payment securely using the link below:</p>
+      <p><a href="${paymentLink}" target="_blank" style="color:#007bff;">Click here to Pay Now</a></p>
+      <p>Thank you for choosing One Step Solution!</p>
+      <p>Regards,<br>Team One Step Solution</p>
+      `,
+      
+      attachments
     );
 
-    //  Update technician status to available again
-    await User.findByIdAndUpdate(technicianId, {
-      technicianStatus: "available",
-      onDuty: false,
-      availability: true
-    });
-
+    
     res.status(200).json({
-      message: "Work marked as completed successfully.",
-      work
+      success: true,
+      message: "Work completed, photo uploaded, and invoice sent with payment link.",
+      workId: work._id,
+      afterPhoto: afterPhotoUrl,
+      invoice: work.invoice,
+      paymentLink,
     });
+    await sendNotification(
+  technicianId,
+  "technician",
+  "Job Completed",
+  `You successfully completed ${work.serviceType}.`,
+  "success",
+  `/technician/work/${work._id}`
+);
+
+await sendNotification(
+  work.client,
+  "client",
+  "Job Completed",
+  `Your job (${work.serviceType}) is completed. Invoice sent via email.`,
+  "success",
+  `/client/work/${work._id}`
+);
+
+
   } catch (err) {
-    console.error("Work Complete Error:", err);
+    console.error("❌ Work Complete Error:", err);
     res.status(500).json({ message: "Server error" });
   }
 };
@@ -387,40 +538,51 @@ exports.updateLocation = async (req, res) => {
     if (!lat || !lng)
       return res.status(400).json({ message: "Latitude and longitude required" });
 
-    // Update technician coordinates
+    //  Update technician coordinates
     await User.findByIdAndUpdate(technicianId, {
       coordinates: { lat, lng },
       lastLocationUpdate: new Date(),
-      onDuty: true
+      onDuty: true,
     });
 
-    // Find assigned work with status 'taken' or 'approved' (ready to dispatch)
+    //  Find assigned work (status = taken or approved)
     const work = await Work.findOne({
       assignedTechnician: technicianId,
-      status: { $in: ["taken", "approved"] }
+      status: { $in: ["taken", "approved", "dispatch", "inprogress"] },
     });
 
     let etaMessage = null;
 
     if (work) {
-      // Update work status to 'dispatch' or 'inprogress'
-      if (work.status === "taken" || work.status === "approved") {
-        work.status = "dispatch"; // or "inprogress" based on your flow
+      // Update work status
+      if (["taken", "approved"].includes(work.status)) {
+        work.status = "dispatch"; // or "inprogress" as per your flow
         await work.save();
       }
 
-      // Calculate ETA using ORS API if coordinates are available
+      //  Calculate ETA using Google Maps Distance Matrix API
       if (work.coordinates) {
-        const orsKey = process.env.ORS_KEY;
-        const url = `https://api.openrouteservice.org/v2/directions/driving-car?api_key=${orsKey}&start=${lng},${lat}&end=${work.coordinates.lng},${work.coordinates.lat}`;
+        const googleKey = process.env.GOOGLE_MAPS_API_KEY;
+
+        const origin = `${lat},${lng}`;
+        const destination = `${work.coordinates.lat},${work.coordinates.lng}`;
+
+        const url = `https://maps.googleapis.com/maps/api/distancematrix/json?origins=${origin}&destinations=${destination}&mode=driving&departure_time=now&key=${googleKey}`;
 
         try {
           const response = await axios.get(url);
-          const seconds = response.data.features[0].properties.summary.duration;
-          const minutes = Math.round(seconds / 60);
-          etaMessage = `Technician will arrive in approximately ${minutes} minutes.`;
+          const data = response.data;
+
+          if (data.rows?.[0]?.elements?.[0]?.duration_in_traffic) {
+            const minutes = Math.round(
+              data.rows[0].elements[0].duration_in_traffic.value / 60
+            );
+            etaMessage = `Technician will arrive in approximately ${minutes} minutes (live traffic ETA).`;
+          } else {
+            etaMessage = "ETA not available (traffic data missing).";
+          }
         } catch (err) {
-          console.log("ETA calculation failed:", err.message);
+          console.log("Google ETA calculation failed:", err.message);
         }
       }
     }
@@ -428,7 +590,7 @@ exports.updateLocation = async (req, res) => {
     res.status(200).json({
       message: "Location updated successfully",
       workStatus: work ? work.status : "No active work",
-      eta: etaMessage || "ETA not available"
+      eta: etaMessage || "ETA not available",
     });
   } catch (err) {
     console.error("Update Location Error:", err);
@@ -436,21 +598,20 @@ exports.updateLocation = async (req, res) => {
   }
 };
 
-
-// GET /api/client/track-technician/:workId
-
+// ------------------------ TRACK TECHNICIAN FOR CLIENT ------------------------
 exports.trackTechnician = async (req, res) => {
   try {
     const { workId } = req.params;
     const work = await Work.findById(workId).populate("assignedTechnician");
 
-    if (!work || !work.assignedTechnician)
+    if (!work || !work.assignedTechnician) {
       return res.status(404).json({ message: "Technician not assigned yet" });
+    }
 
     const technician = work.assignedTechnician;
     const client = await User.findById(work.client);
 
-    // ✅ Use coordinates from work (client location)
+    // Prefer work coordinates, else fallback to client's saved coordinates
     const clientLat = work.coordinates?.lat || client.coordinates?.lat;
     const clientLng = work.coordinates?.lng || client.coordinates?.lng;
 
@@ -460,44 +621,58 @@ exports.trackTechnician = async (req, res) => {
       !clientLat ||
       !clientLng
     ) {
-      return res.status(400).json({ message: "Missing coordinates for route calculation" });
+      return res.status(400).json({
+        message: "Missing coordinates for route calculation",
+      });
     }
 
-    const orsKey = process.env.ORS_KEY; // make sure env var is UPPERCASE
-    const url = `https://api.openrouteservice.org/v2/directions/driving-car?api_key=${orsKey}&start=${technician.coordinates.lng},${technician.coordinates.lat}&end=${clientLng},${clientLat}`;
+    const googleKey = process.env.GOOGLE_MAPS_API_KEY;
+    const origin = `${technician.coordinates.lat},${technician.coordinates.lng}`;
+    const destination = `${clientLat},${clientLng}`;
+
+    const url = `https://maps.googleapis.com/maps/api/distancematrix/json?origins=${origin}&destinations=${destination}&mode=driving&departure_time=now&key=${googleKey}`;
 
     const response = await axios.get(url);
-    const route = response.data?.features?.[0];
+    const data = response.data;
 
-    if (!route) {
-      return res.status(400).json({ message: "Unable to fetch route or invalid coordinates" });
+    // Log response if needed (debug)
+    // console.log("Google API response:", JSON.stringify(data, null, 2));
+
+    // Check top-level and element statuses
+    const element = data.rows?.[0]?.elements?.[0];
+    if (data.status !== "OK" || !element || element.status !== "OK") {
+      console.error("Google API Error:", data.status, element?.status);
+      return res.status(400).json({
+        message: `Google Maps API error: ${data.status} / ${element?.status}`,
+      });
     }
 
-    const seconds = route.properties.summary.duration;
-    const minutes = Math.round(seconds / 60);
+    // Prefer duration_in_traffic; fallback to duration
+    const etaSeconds =
+      element.duration_in_traffic?.value || element.duration?.value || null;
+
+    const distanceText = element.distance?.text || "Unknown";
+    const minutes = etaSeconds ? Math.round(etaSeconds / 60) : "N/A";
 
     res.status(200).json({
       technician: {
         name: technician.name,
         coordinates: technician.coordinates,
         lastUpdate: technician.lastLocationUpdate,
-        liveStatus: work.status
+        liveStatus: work.status,
       },
       client: {
         name: client.name,
-        coordinates: { lat: clientLat, lng: clientLng }
+        coordinates: { lat: clientLat, lng: clientLng },
       },
-      eta: `${minutes} minutes`
+      eta: `${minutes} minutes`,
+      distance: distanceText,
     });
-
   } catch (err) {
     console.error("Track Technician Error:", err.message);
     res.status(500).json({ message: "Server error" });
   }
 };
-
-
-
 
 exports.getClientWorkStatus = async (req, res) => {
   try {
@@ -540,6 +715,7 @@ exports.getClientWorkStatus = async (req, res) => {
       token: work.token,
       serviceType: work.serviceType,
       specialization: work.specialization,
+      serviceCharge:work.serviceCharge,
       description: work.description,
       location: work.location,
       status: work.status,
@@ -658,7 +834,7 @@ exports.reportWorkIssue = async (req, res) => {
     res.status(500).json({ message: "Server error" });
   }
 };
-
+ 
 exports.getAdminNotifications = async (req, res) => {
   
   try {
@@ -679,5 +855,57 @@ exports.getAdminNotifications = async (req, res) => {
   } catch (err) {
     console.error("Get Admin Notifications Error:", err.message);
     res.status(500).json({ message: "Server error while fetching notifications" });
+  }
+};
+
+
+// PATCH /api/client/pay-bill
+exports.payBill = async (req, res) => {
+  try {
+    const { workId, paymentMethod, paymentStatus } = req.body; // paymentMethod = "cash" | "upi"
+    const clientId = req.user._id;
+
+    const work = await Work.findById(workId).populate("client");
+    if (!work) return res.status(404).json({ message: "Work not found" });
+
+    if (String(work.client._id) !== String(clientId))
+      return res.status(403).json({ message: "Unauthorized" });
+
+    if (work.status !== "completed")
+      return res.status(400).json({ message: "Work not completed yet" });
+
+    // ✅ Update payment info
+    work.payment = {
+      method: paymentMethod,
+      status: paymentStatus || "paid",
+      paidAt: new Date(),
+    };
+    await work.save();
+await sendNotification(
+  work.client,
+  "client",
+  "Payment Successful",
+  `Payment received for work ID: ${work._id}`,
+  "success",
+  `/client/work/${work._id}`
+);
+
+    
+    await sendemail(
+      work.client.email,
+      `Payment Confirmation - ${work.invoice.invoiceNumber}`,
+      `<p>Hello ${work.client.firstName},</p>
+       <p>We’ve received your payment of ₹${work.invoice.total.toFixed(2)} via ${paymentMethod.toUpperCase()}.</p>
+       <p>Your final invoice is attached below.</p>`,
+      work.invoice.pdfUrl
+    );
+
+    res.status(200).json({
+      message: "Payment processed and final invoice sent to client email.",
+      payment: work.payment,
+    });
+  } catch (err) {
+    console.error("Payment Error:", err);
+    res.status(500).json({ message: "Server error" });
   }
 };

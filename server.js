@@ -13,7 +13,7 @@ require("./config/passport");
 
 // ✅ Middlewares
 app.use(cors({
-  origin: ["http://localhost:3000"], // frontend origin (change if needed)
+  origin: ["http://localhost:5173"], // frontend origin (change if needed)
   credentials: true,
 }));
 app.use(express.json());
@@ -38,6 +38,7 @@ app.use('/api', require('./routes/work'));
 app.use('/api', require('./routes/admin'));
 app.use('/otp',require('./routes/otpRoutes'))
 app.use('/forget',require('./routes/forgotpassword'))
+app.use('/service',require('./routes/service'))
 // ✅ MongoDB Connection (unchanged)
 mongoose.connect(process.env.MONGO_URL)
   .then(() => console.log('✅ MongoDB connected'))

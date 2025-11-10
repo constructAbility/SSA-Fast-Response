@@ -21,12 +21,12 @@ exports.WorkComplete = async (req, res) => {
       return res.status(403).json({ message: "You are not assigned to this work" });
     }
 
-    // 🔹 Update work to completed
+    //  Update work to completed
     work.status = "completed";
     work.completedAt = new Date();
     await work.save();
 
-    // 🔹 Automatically create a Service record with warranty
+    //  Automatically create a Service record with warranty
     let service = await Service.findOne({
       clientId: work.client,
       serviceType: work.serviceType,
@@ -78,6 +78,62 @@ exports.WorkComplete = async (req, res) => {
   } catch (err) {
     console.error("Work Complete Error:", err);
     res.status(500).json({ message: "Server error" });
+  }
+};
+
+
+exports.addServiceIfWorkCompleted = async (req, res) => {
+  try {
+    const { workId } = req.body;
+
+    if (!workId) {
+      return res.status(400).json({ message: "Work ID is required" });
+    }
+
+    // 🔹 Find the work first
+    const work = await Work.findById(workId);
+
+    if (!work) {
+      return res.status(404).json({ message: "Work not found" });
+    }
+
+    // 🔹 Check if work is completed
+    if (work.status !== "completed") {
+      return res.status(400).json({
+        message: "Work is not completed yet. Cannot create service.",
+      });
+    }
+
+    // 🔹 Check if service already exists for this work
+    let existingService = await Service.findOne({ workId: work._id });
+    if (existingService) {
+      return res.status(400).json({
+        message: "Service already exists for this completed work.",
+        service: existingService,
+      });
+    }
+
+    // 🔹 Create new service based on work details
+    const service = new Service({
+      clientId: work.client,
+      technicianId: work.assignedTechnician,
+      workId: work._id,
+      serviceType: work.serviceType,
+      worrentystatus: "completed",
+      completedAt: work.completedAt || new Date(),
+      warrantyDays: 30, // default 30 days warranty
+      warrantyActive: true,
+    });
+
+    await service.save();
+
+    res.status(201).json({
+      message: "Service created successfully for completed work.",
+      service,
+    });
+  } catch (error) {
+    console.error("Error adding service:", error);
+    res.status(500).json({ message: "Server error while adding service." });
   }
 };
 
