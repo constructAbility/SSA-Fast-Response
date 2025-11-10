@@ -26,7 +26,7 @@ exports.sendOTP = async (req, res) => {
       port: 587,
       auth: {
         user: "apikey", // literally "apikey"
-        pass: process.env.SENDGRID_PASS, // your SendGrid API key
+        pass: process.env.SENDGRID_API_KEY, // your SendGrid API key
       },
     });
 

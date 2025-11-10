@@ -21,36 +21,37 @@ exports.createWork = async (req, res) => {
       description, 
       location, 
       serviceCharge,
-      technicianId, 
       lat, 
-      lng 
+      lng,
+      time
     } = req.body;
 
     const clientId = req.user._id;
 
-    if (!serviceType || !specialization || !location)
+    if (!serviceType || !specialization || !location) {
       return res.status(400).json({ message: "Missing required fields" });
-
-    if (!lat || !lng)
+    }
+    if (!lat || !lng) {
       return res.status(400).json({ message: "Client coordinates (lat, lng) required" });
+    }
 
     // Normalize specialization
     let specs = [];
     if (typeof specialization === "string") {
-      specs = specialization.split(",").map(s => s.trim().toLowerCase()).filter(Boolean);
+      specs = specialization.split(",").map(s => s.trim().toLowerCase());
     } else if (Array.isArray(specialization)) {
       specs = specialization.map(s => s.trim().toLowerCase());
     }
 
     const normalizedLocation = location.trim().toLowerCase();
 
-    //  Save client's coordinates in user document
+    // 🧭 Save client coordinates
     await User.findByIdAndUpdate(clientId, {
       coordinates: { lat, lng },
       lastLocationUpdate: new Date()
     });
 
-    //  Create work with client coordinates
+    // 🏗️ Create work
     const work = await Work.create({
       client: clientId,
       serviceType,
@@ -59,24 +60,25 @@ exports.createWork = async (req, res) => {
       serviceCharge,
       location: normalizedLocation,
       coordinates: { lat, lng },
-      assignedTechnician: technicianId || null,
-      status: technicianId ? "taken" : "open",
+      assignedTechnician: null,
+      status: "open",
+      time,
       token: `REQ-${new Date().getFullYear()}-${String(Date.now()).slice(-5)}`
     });
 
-    //  Find matching technicians
+    // 🔍 Find matching technicians
     const technicians = await User.find({
       role: "technician",
       specialization: { $in: specs.map(s => new RegExp(s, "i")) },
       location: { $regex: new RegExp(normalizedLocation, "i") }
     }).select("name phone email experience specialization location ratings coordinates");
 
-    //  Attach availability
+    // ⚙️ Attach work status
     const techniciansWithStatus = [];
     for (const tech of technicians) {
       const inWork = await Work.findOne({
         assignedTechnician: tech._id,
-        status: { $in: ["taken", "approved"] }
+        status: { $in: ["taken", "approved", "inprogress"] }
       });
 
       techniciansWithStatus.push({
@@ -85,24 +87,23 @@ exports.createWork = async (req, res) => {
       });
     }
 
-    res.status(201).json({
-      message: technicianId
-        ? "Work created and assigned to technician"
-        : "Work request submitted successfully",
-      work,
-      matchingTechnicians: techniciansWithStatus.length
-        ? techniciansWithStatus
-        : "No matching technicians found"
-    });
-    await sendNotification(
-  work.client,
-  "client",
-  "Work Request Submitted",
-  `Your work request (${work.serviceType}) has been successfully submitted.`,
-  "success",
-  `/client/work/${work._id}`
-);
+    // 📨 Notify client (optional)
+    if (typeof sendNotification === "function") {
+      await sendNotification(
+        clientId,
+        "client",
+        "Work Request Submitted",
+        `Your ${serviceType} request has been successfully created.`,
+        "success",
+        `/client/work/${work._id}`
+      );
+    }
 
+    res.status(201).json({
+      message: "Work created successfully",
+      work,
+      matchingTechnicians: techniciansWithStatus.length ? techniciansWithStatus : []
+    });
 
   } catch (err) {
     console.error("Work Creation Error:", err);
@@ -198,102 +199,76 @@ exports.findMatchingTechnicians = async (req, res) => {
 
 exports.bookTechnician = async (req, res) => {
   try {
-    const { workId, technicianId, serviceType, serviceCharge, description, date, time } = req.body;
+    const { technicianId, date, time } = req.body;
+    const workId = req.params.id;
     const userId = req.user._id;
 
-    
-    if (!technicianId || !workId)
+    if (!technicianId || !workId) {
       return res.status(400).json({ message: "Work ID and Technician ID are required" });
-
-    
-    let workDate;
-    if (date && time) {
-      workDate = new Date(`${date}T${time}`);
-    } else if (date) {
-      workDate = new Date(date);
-    } else {
-      workDate = new Date();
     }
 
-    if (isNaN(workDate.getTime()))
-      return res.status(400).json({ message: "Invalid date or time format" });
+    const work = await Work.findById(workId);
+    if (!work) return res.status(404).json({ message: "Work not found" });
 
-    
-    const client = await User.findById(userId);
-    if (!client) return res.status(404).json({ message: "Client not found" });
-
-   
     const technician = await User.findById(technicianId);
     if (!technician) return res.status(404).json({ message: "Technician not found" });
 
-   
-    const conflict = await Work.findOne({
+    // 🔎 Check if technician already busy
+    const activeWork = await Work.findOne({
       assignedTechnician: technicianId,
-      status: { $in: ["taken", "dispatch", "inprogress"] }
+      status: { $in: ["taken", "inprogress", "dispatch"] }
     });
-    if (conflict)
+    if (activeWork) {
       return res.status(400).json({ message: "Technician already assigned to another work" });
+    }
 
- 
-    const booking = await Booking.create({
-      user: userId,
-      technician: technicianId,
-      serviceType,
-      serviceCharge,
-      description,
-      location: client.location || "Not available",
-      address: client.address || "Not available",
-      date: workDate,
-      status: "open",
-    });
+    // ✅ Assign technician
+    work.assignedTechnician = technicianId;
+    work.status = "taken";
+    work.date = date || new Date();
+    work.time = time || "";
+    await work.save();
 
-    
-    const updatedWork = await Work.findByIdAndUpdate(
-      workId,
-      { assignedTechnician: technicianId, status: "taken" },
-      { new: true }
+    // ❗ Mark similar open works as unavailable
+    await Work.updateMany(
+      { _id: { $ne: workId }, status: "open", serviceType: work.serviceType },
+      { $set: { status: "unavailable" } }
     );
-    if (!updatedWork) return res.status(404).json({ message: "Work not found for assignment" });
 
-  
+    // 🧠 Update technician
     await User.findByIdAndUpdate(technicianId, {
       technicianStatus: "dispatched",
       onDuty: true,
       $inc: { totalJobs: 1 },
     });
 
+    // 📨 Notify client & technician (optional)
+    if (typeof sendNotification === "function") {
+      await sendNotification(
+        work.client,
+        "client",
+        "Work Accepted",
+        `Your ${work.serviceType} request has been taken by ${technician.name}.`,
+        "info",
+        `/client/work/${work._id}`
+      );
 
-    let etaMessage = "ETA not available";
-    const googleKey = process.env.GOOGLE_MAPS_API_KEY;
-
-    const techC = technician.coordinates;
-    const workC = updatedWork.coordinates;
-
-    if (techC?.lat && techC?.lng && workC?.lat && workC?.lng) {
-      const origin = `${parseFloat(techC.lat)},${parseFloat(techC.lng)}`;
-      const destination = `${parseFloat(workC.lat)},${parseFloat(workC.lng)}`;
-      const url = `https://maps.googleapis.com/maps/api/distancematrix/json?origins=${origin}&destinations=${destination}&mode=driving&departure_time=now&traffic_model=best_guess&key=${googleKey}`;
-
-      try {
-        const resp = await axios.get(url);
-        const eta = resp.data?.rows?.[0]?.elements?.[0];
-        if (eta?.status === "OK") {
-          const minutes = Math.round(eta.duration_in_traffic?.value / 60);
-          etaMessage = `Technician ${technician.name} will arrive in approximately ${minutes} minutes (live traffic ETA).`;
-        }
-      } catch (err) {
-        console.log("ETA calculation failed:", err.message);
-      }
+      await sendNotification(
+        technicianId,
+        "technician",
+        "New Work Assigned",
+        `You have been assigned a ${work.serviceType} job.`,
+        "success",
+        `/technician/work/${work._id}`
+      );
     }
 
-   
-    res.status(201).json({
-      message: "Technician booked successfully.",
-      booking,
-      work: updatedWork,
-      technicianStatus: "dispatched",
-      eta: etaMessage,
+    res.status(200).json({
+      message: "Technician booked successfully",
+      work,
+      technicianStatus: "dispatched"
     });
+
   } catch (err) {
     console.error("Book Technician Error:", err);
     res.status(500).json({ message: "Server error while booking technician" });
