@@ -1,4 +1,4 @@
-<<<<<<< HEAD
+
 const axios = require('axios');
 const crypto = require('crypto');
 
@@ -50,8 +50,7 @@ module.exports = {
     }
   }
 };
-=======
-// utils/upi.js
+
 const QRCode = require('qrcode');
 
 exports.createUpi = async (vpa, name, amount, note) => {
@@ -89,4 +88,3 @@ async function createUPIRequest(orderId, amount) {
 
   return res.data;
 }
->>>>>>> origin/main

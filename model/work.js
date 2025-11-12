@@ -33,10 +33,9 @@ const workSchema = new mongoose.Schema(
         "open",
         "taken",
         "approved",
-<<<<<<< HEAD
+
         "reject",
-=======
->>>>>>> origin/main
+
         "dispatch",
         "inprogress",
         "completed",
@@ -61,11 +60,11 @@ const workSchema = new mongoose.Schema(
     },
 
     
-<<<<<<< HEAD
+
     beforphoto: { type: String },
-=======
+
     beforphoto: { type: String  },
->>>>>>> origin/main
+
 
     afterphoto: { type: String },
 

@@ -1,10 +1,9 @@
 
 const mongoose= require('mongoose')
 const Work = require("../model/work");
-<<<<<<< HEAD
-=======
-const user= require("../model/User")
->>>>>>> origin/main
+
+
+
 const axios = require("axios");
 
 exports.getAllWorks = async (req, res) => {
@@ -266,8 +265,5 @@ exports.getTechnicianWorkStatus = async (req, res) => {
     console.error("Technician Work Status Error:", err);
     res.status(500).json({ message: "Server error" });
   }
-<<<<<<< HEAD
+
 };
-=======
-};
->>>>>>> origin/main
