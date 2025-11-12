@@ -64,6 +64,7 @@ const BillSchema = new Schema(
       type: Schema.Types.Mixed,
     },
 
+<<<<<<< HEAD
     // if getway activate 
 //     paymentInfo: {
 //     orderId: String,
@@ -73,6 +74,8 @@ const BillSchema = new Schema(
 // },
 
 
+=======
+>>>>>>> origin/main
     invoiceId: String, 
     pdfUrl: String,
     paidAt: Date,
