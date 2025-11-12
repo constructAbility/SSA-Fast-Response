@@ -110,16 +110,16 @@ exports.createWork = async (req, res) => {
   }
 };
 
-//  Find Matching Technicians
+
 exports.findMatchingTechnicians = async (req, res) => {
   try {
-    let { specialization, location, date } = req.body;
+    const clientId = req.user._id;
+    let { specialization, location, date, description, serviceType, time } = req.body;
 
     if (!specialization || !location || !date) {
       return res.status(400).json({ message: "Specialization, location, and date required" });
     }
 
-    // If frontend sends string, convert to array
     if (typeof specialization === "string") {
       specialization = [specialization];
     }
@@ -139,34 +139,31 @@ exports.findMatchingTechnicians = async (req, res) => {
       specs = specialization.map(s => s.trim().toLowerCase());
     }
 
-    // 🧩 3. Normalize location
-    const normalizedLocation = location.trim();
+    const normalizedLocation = location.trim().toLowerCase();
 
-    //  4. Create new work document
+  
     const work = await Work.create({
       client: clientId,
       serviceType,
       specialization: specs,
       description,
-      location: normalizedLocation.toLowerCase(),
+      location: normalizedLocation,
       date: workDate,
+      time,
       status: "open",
       token: `REQ-${new Date().getFullYear()}-${String(Date.now()).slice(-5)}`
     });
-
-    // 🧩 5. Find matching technicians (case-insensitive + partial location match)
+      
     const technicians = await User.find({
       role: "technician",
       specialization: { $in: specs.map(s => new RegExp(s, "i")) },
       location: { $regex: new RegExp(normalizedLocation, "i") }
     }).select("name phone email experience specialization location ratings");
 
-    //  6. Check technician work status
     const techniciansWithStatus = [];
     for (const tech of technicians) {
       const inWork = await Work.findOne({
         assignedTechnician: tech._id,
-        date: workDate,
         status: { $in: ["taken", "approved"] }
       });
 
@@ -174,13 +171,30 @@ exports.findMatchingTechnicians = async (req, res) => {
         ...tech.toObject(),
         employeeStatus: inWork ? "in work" : "available"
       });
+
+     
+      await sendNotification(
+        tech._id,
+        "technician",
+        "New Work Request",
+        `New job available: ${serviceType} in ${location}`,
+        "info",
+        `/technician/jobs`
+      );
     }
 
-    //  7. Save and respond
-    await work.save();
+   
+    await sendNotification(
+      clientId,
+      "client",
+      "Work Request Submitted",
+      `Your request for ${serviceType} has been submitted successfully.`,
+      "success",
+      `/client/work/${work._id}`
+    );
 
     res.status(201).json({
-      message: "Work request submitted",
+      message: "Work request submitted and sent to all matching technicians",
       work,
       matchingTechnicians: techniciansWithStatus.length
         ? techniciansWithStatus
@@ -195,20 +209,26 @@ exports.findMatchingTechnicians = async (req, res) => {
 
 
 
-
 exports.bookTechnician = async (req, res) => {
   try {
     const { workId, technicianId, serviceType, serviceCharge, description, date, time } = req.body;
     const userId = req.user._id;
 
-    
     if (!technicianId || !workId)
       return res.status(400).json({ message: "Work ID and Technician ID are required" });
 
-    
+ 
     let workDate;
     if (date && time) {
-      workDate = new Date(`${date}T${time}`);
+      
+      let formattedTime = time;
+      if (time.includes("PM") || time.includes("AM")) {
+        const parsedTime = new Date(`1970-01-01T${time}`);
+        if (!isNaN(parsedTime.getTime())) {
+          formattedTime = parsedTime.toLocaleTimeString("en-GB", { hour12: false });
+        }
+      }
+      workDate = new Date(`${date}T${formattedTime}`);
     } else if (date) {
       workDate = new Date(date);
     } else {
@@ -218,15 +238,28 @@ exports.bookTechnician = async (req, res) => {
     if (isNaN(workDate.getTime()))
       return res.status(400).json({ message: "Invalid date or time format" });
 
-    
     const client = await User.findById(userId);
     if (!client) return res.status(404).json({ message: "Client not found" });
 
-   
     const technician = await User.findById(technicianId);
     if (!technician) return res.status(404).json({ message: "Technician not found" });
 
-   
+    // 🧩 New Check — Same client, same technician, same serviceType & serviceCharge
+    const duplicateBooking = await Booking.findOne({
+      user: userId,
+      technician: technicianId,
+      serviceType: serviceType,
+      serviceCharge: serviceCharge,
+      status: { $in: ["open", "taken", "dispatch", "inprogress"] }, // still active
+    });
+
+    if (duplicateBooking) {
+      return res.status(400).json({
+        message: `You already booked technician ${technician.name} for ${serviceType} at ₹${serviceCharge}. Please wait for completion or choose another technician.`,
+      });
+    }
+
+    // ⚠️ Check if technician already in other work
     const conflict = await Work.findOne({
       assignedTechnician: technicianId,
       status: { $in: ["taken", "dispatch", "inprogress"] }
@@ -234,7 +267,7 @@ exports.bookTechnician = async (req, res) => {
     if (conflict)
       return res.status(400).json({ message: "Technician already assigned to another work" });
 
- 
+    // 🧾 Create new booking
     const booking = await Booking.create({
       user: userId,
       technician: technicianId,
@@ -247,7 +280,7 @@ exports.bookTechnician = async (req, res) => {
       status: "open",
     });
 
-    
+    // 🔄 Update work
     const updatedWork = await Work.findByIdAndUpdate(
       workId,
       { assignedTechnician: technicianId, status: "taken" },
@@ -255,23 +288,22 @@ exports.bookTechnician = async (req, res) => {
     );
     if (!updatedWork) return res.status(404).json({ message: "Work not found for assignment" });
 
-  
+    // 👷 Update technician
     await User.findByIdAndUpdate(technicianId, {
       technicianStatus: "dispatched",
       onDuty: true,
       $inc: { totalJobs: 1 },
     });
 
-
+    // 🗺️ ETA Calculation
     let etaMessage = "ETA not available";
     const googleKey = process.env.GOOGLE_MAPS_API_KEY;
-
     const techC = technician.coordinates;
     const workC = updatedWork.coordinates;
 
     if (techC?.lat && techC?.lng && workC?.lat && workC?.lng) {
-      const origin = `${parseFloat(techC.lat)},${parseFloat(techC.lng)}`;
-      const destination = `${parseFloat(workC.lat)},${parseFloat(workC.lng)}`;
+      const origin = `${techC.lat},${techC.lng}`;
+      const destination = `${workC.lat},${workC.lng}`;
       const url = `https://maps.googleapis.com/maps/api/distancematrix/json?origins=${origin}&destinations=${destination}&mode=driving&departure_time=now&traffic_model=best_guess&key=${googleKey}`;
 
       try {
@@ -286,7 +318,7 @@ exports.bookTechnician = async (req, res) => {
       }
     }
 
-   
+    // ✅ Success
     res.status(201).json({
       message: "Technician booked successfully.",
       booking,
@@ -294,13 +326,12 @@ exports.bookTechnician = async (req, res) => {
       technicianStatus: "dispatched",
       eta: etaMessage,
     });
+
   } catch (err) {
     console.error("Book Technician Error:", err);
     res.status(500).json({ message: "Server error while booking technician" });
   }
 };
-
-
 
 
 
@@ -380,7 +411,6 @@ await sendNotification(
     res.status(500).json({ message: "Server error" });
   }
 };
-
 
 
 
@@ -528,7 +558,6 @@ await sendNotification(
 };
 
 
-// PATCH /api/technician/update-location
 
 exports.updateLocation = async (req, res) => {
   try {
@@ -538,59 +567,46 @@ exports.updateLocation = async (req, res) => {
     if (!lat || !lng)
       return res.status(400).json({ message: "Latitude and longitude required" });
 
-    //  Update technician coordinates
-    await User.findByIdAndUpdate(technicianId, {
-      coordinates: { lat, lng },
-      lastLocationUpdate: new Date(),
-      onDuty: true,
-    });
-
-    //  Find assigned work (status = taken or approved)
+    // 🔍 Find active approved work
     const work = await Work.findOne({
       assignedTechnician: technicianId,
-      status: { $in: ["taken", "approved", "dispatch", "inprogress"] },
-    });
+      status: { $in: ["approved", "taken", "dispatch", "inprogress"] },
+    }).populate("client", "name phone email coordinates serviceType");
 
-    let etaMessage = null;
-
-    if (work) {
-      // Update work status
-      if (["taken", "approved"].includes(work.status)) {
-        work.status = "dispatch"; // or "inprogress" as per your flow
-        await work.save();
-      }
-
-      //  Calculate ETA using Google Maps Distance Matrix API
-      if (work.coordinates) {
-        const googleKey = process.env.GOOGLE_MAPS_API_KEY;
-
-        const origin = `${lat},${lng}`;
-        const destination = `${work.coordinates.lat},${work.coordinates.lng}`;
-
-        const url = `https://maps.googleapis.com/maps/api/distancematrix/json?origins=${origin}&destinations=${destination}&mode=driving&departure_time=now&key=${googleKey}`;
-
-        try {
-          const response = await axios.get(url);
-          const data = response.data;
-
-          if (data.rows?.[0]?.elements?.[0]?.duration_in_traffic) {
-            const minutes = Math.round(
-              data.rows[0].elements[0].duration_in_traffic.value / 60
-            );
-            etaMessage = `Technician will arrive in approximately ${minutes} minutes (live traffic ETA).`;
-          } else {
-            etaMessage = "ETA not available (traffic data missing).";
-          }
-        } catch (err) {
-          console.log("Google ETA calculation failed:", err.message);
-        }
-      }
+    // 🚫 Block updates if no approved work
+    if (!work || work.status !== "approved") {
+      return res.status(403).json({
+        message: "You cannot update location until the work is approved.",
+      });
     }
 
+    // ✅ Proceed with location update
+    const technician = await User.findByIdAndUpdate(
+      technicianId,
+      {
+        coordinates: { lat, lng },
+        lastLocationUpdate: new Date(),
+        onDuty: true,
+      },
+      { new: true }
+    );
+
+    // 🔹 Auto move to dispatch
+    work.status = "dispatch";
+    await work.save();
+
+    await sendNotification(
+      work.client._id,
+      "client",
+      "Technician on the Way",
+      `${technician.name} is on the way for your ${work.serviceType} service.`,
+      "info",
+      `/client/work/${work._id}`
+    );
+
     res.status(200).json({
-      message: "Location updated successfully",
-      workStatus: work ? work.status : "No active work",
-      eta: etaMessage || "ETA not available",
+      message: "Technician location updated and status set to 'dispatch'.",
+      workStatus: "dispatch",
     });
   } catch (err) {
     console.error("Update Location Error:", err);
@@ -598,7 +614,8 @@ exports.updateLocation = async (req, res) => {
   }
 };
 
-// ------------------------ TRACK TECHNICIAN FOR CLIENT ------------------------
+
+
 exports.trackTechnician = async (req, res) => {
   try {
     const { workId } = req.params;
@@ -859,7 +876,7 @@ exports.getAdminNotifications = async (req, res) => {
 };
 
 
-// PATCH /api/client/pay-bill
+
 exports.payBill = async (req, res) => {
   try {
     const { workId, paymentMethod, paymentStatus } = req.body; // paymentMethod = "cash" | "upi"

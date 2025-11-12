@@ -41,7 +41,7 @@ exports.completeWorkAndGenerateBill = async (req, res) => {
     let upiUri = "";
     let qrBuffer = null;
     if (paymentMethod === "upi") {
-      const upiId = "7678661120@ybl"; // Replace with your UPI ID
+      const upiId = process.env.upi_id; // Replace with your UPI ID
       upiUri = `upi://pay?pa=${upiId}&pn=${encodeURIComponent(technician.firstName || "Technician")}&am=${totalAmount}&cu=INR&tn=${encodeURIComponent(`Payment for ${work.title || "Service"}`)}`;
       const upiQR = await QRCode.toDataURL(upiUri);
       qrBuffer = Buffer.from(upiQR.split(",")[1], "base64");
@@ -195,7 +195,7 @@ exports.getAvailableJobs = async (req, res) => {
     const technician = await User.findById(technicianId);
     if (!technician) return res.status(404).json({ message: "Technician not found" });
 
-    // Find all open jobs matching technician specialization or location
+
     const jobs = await Work.find({
       status: "open",
       specialization: { $in: technician.specialization },
@@ -212,8 +212,7 @@ exports.getAvailableJobs = async (req, res) => {
   }
 };
 
-// ✅ Technician approves (takes) a job
-// ✅ Technician approves (takes) a job
+
 exports.approveJob = async (req, res) => {
   try {
     const { workId } = req.body;
@@ -227,24 +226,22 @@ exports.approveJob = async (req, res) => {
     if (work.status !== "open")
       return res.status(400).json({ message: "Work already assigned or in progress" });
 
-    // ✅ Assign technician and update status
     work.assignedTechnician = technicianId;
     work.status = "approved";
     await work.save();
 
-    // ✅ Hide similar open works (optional)
     await Work.updateMany(
       { _id: { $ne: workId }, status: "open", serviceType: work.serviceType },
       { $set: { status: "unavailable" } }
     );
 
-    // ✅ Update technician status
+ 
     await User.findByIdAndUpdate(technicianId, {
       technicianStatus: "approved",
       onDuty: true,
     });
 
-    // ✅ Notify Technician
+  
     await sendNotification(
       technicianId,
       "technician",
@@ -254,7 +251,7 @@ exports.approveJob = async (req, res) => {
       `/technician/work/${work._id}`
     );
 
-    // ✅ Notify Client
+  
     await sendNotification(
       work.client,
       "client",
