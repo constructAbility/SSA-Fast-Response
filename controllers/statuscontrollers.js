@@ -1,6 +1,7 @@
 
 const mongoose= require('mongoose')
 const Work = require("../model/work");
+const user= require("../model/User")
 const axios = require("axios");
 
 exports.getAllWorks = async (req, res) => {
