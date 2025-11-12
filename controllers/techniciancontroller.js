@@ -270,3 +270,67 @@ exports.approveJob = async (req, res) => {
     res.status(500).json({ message: "Server error" });
   }
 };
+exports.getTechnicianSummary = async (req, res) => {
+  try {
+    const technicianId = req.user._id;
+
+    // ✅ Fetch all works assigned to technician
+    const works = await Work.find({ assignedTechnician: technicianId })
+      .populate("client", "firstName lastName phone email address")
+      .populate("supervisor", "firstName lastName phone email")
+      .populate("billId")
+      .sort({ createdAt: -1 });
+
+    if (!works || works.length === 0) {
+      return res.status(200).json({
+        success: true,
+        message: "No works assigned yet.",
+        summary: { total: 0 },
+        data: {
+          completed: [],
+          inProgress: [],
+          upcoming: [],
+          onHold: [],
+        },
+      });
+    }
+
+    // ✅ Filter works by status
+    const completed = works.filter(w => w.status === "completed");
+    const inProgress = works.filter(w => ["inprogress", "confirm"].includes(w.status));
+    const upcoming = works.filter(w => ["approved", "dispatch", "taken", "open"].includes(w.status));
+    const onHold = works.filter(w => ["onhold_parts", "rescheduled", "escalated"].includes(w.status));
+
+    // ✅ Earnings (sum of bill totals)
+    const totalEarnings = completed.reduce((sum, w) => {
+      return sum + (w.billId?.totalAmount || 0);
+    }, 0);
+
+    // ✅ Response structure
+    res.status(200).json({
+      success: true,
+      message: "Technician work summary fetched successfully",
+      summary: {
+        total: works.length,
+        completed: completed.length,
+        inProgress: inProgress.length,
+        upcoming: upcoming.length,
+        onHold: onHold.length,
+        totalEarnings,
+      },
+      data: {
+        completed,
+        inProgress,
+        upcoming,
+        onHold,
+      },
+    });
+  } catch (err) {
+    console.error("❌ Technician Summary Error:", err);
+    res.status(500).json({
+      success: false,
+      message: "Unable to fetch technician summary",
+      error: err.message,
+    });
+  }
+};
