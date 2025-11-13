@@ -108,7 +108,7 @@ exports.completeWorkAndGenerateBill = async (req, res) => {
     });
   }
 };
-exports.getTechnicianSummary = async (req, res) => {
+exports.getTechnicianSummary1 = async (req, res) => {
   try {
     // 🔒 Ye ID login token se aati hai (protect middleware se)
     const technicianId = req.user._id;
@@ -215,101 +215,49 @@ exports.getAvailableJobs = async (req, res) => {
 
 exports.approveJob = async (req, res) => {
   try {
-    const { workId } = req.body;
     const technicianId = req.user._id;
-
-    if (!workId) return res.status(400).json({ message: "Work ID is required" });
+    const { workId } = req.body;
 
     const work = await Work.findById(workId);
     if (!work) return res.status(404).json({ message: "Work not found" });
 
-    if (work.status !== "open")
-      return res.status(400).json({ message: "Work already assigned or in progress" });
+    // Technician sirf apne assigned work ko hi approve kare
+    if (work.technicianId.toString() !== technicianId.toString()) {
+      return res.status(403).json({ message: "Not authorized for this work" });
+    }
 
-    work.assignedTechnician = technicianId;
     work.status = "approved";
     await work.save();
 
-    await Work.updateMany(
-      { _id: { $ne: workId }, status: "open", serviceType: work.serviceType },
-      { $set: { status: "unavailable" } }
-    );
-
- 
-    await User.findByIdAndUpdate(technicianId, {
-      technicianStatus: "approved",
-      onDuty: true,
-    });
-
-  
-    await sendNotification(
-      technicianId,
-      "technician",
-      "Work Approved",
-      `You have successfully approved the work request (${work.serviceType}).`,
-      "success",
-      `/technician/work/${work._id}`
-    );
-
-  
-    await sendNotification(
-      work.client,
-      "client",
-      "Technician Assigned",
-      `Your work request for ${work.serviceType} has been accepted by a technician.`,
-      "info",
-      `/client/work/${work._id}`
-    );
-
     res.status(200).json({
-      message: "Work approved successfully by technician.",
+      success: true,
+      message: "Job approved successfully",
       work,
     });
-  } catch (err) {
-    console.error("Approve Job Error:", err);
+  } catch (error) {
+    console.error("Approve job error:", error);
     res.status(500).json({ message: "Server error" });
   }
 };
-exports.getTechnicianSummary = async (req, res) => {
-  try {
-    const technicianId = req.user._id;
 
-    // ✅ Fetch all works assigned to technician
-    const works = await Work.find({ assignedTechnician: technicianId })
-      .populate("client", "firstName lastName phone email address")
-      .populate("supervisor", "firstName lastName phone email")
+
+exports.getTechnicianSummarybycount = async (req, res) => {
+  try {
+    const technicianId = req.user._id; 
+    const works = await Work.find({ technicianId }) 
+      .populate("clientId", "firstName lastName phone email location")
       .populate("billId")
       .sort({ createdAt: -1 });
 
-    if (!works || works.length === 0) {
-      return res.status(200).json({
-        success: true,
-        message: "No works assigned yet.",
-        summary: { total: 0 },
-        data: {
-          completed: [],
-          inProgress: [],
-          upcoming: [],
-          onHold: [],
-        },
-      });
-    }
-
-    // ✅ Filter works by status
     const completed = works.filter(w => w.status === "completed");
     const inProgress = works.filter(w => ["inprogress", "confirm"].includes(w.status));
     const upcoming = works.filter(w => ["approved", "dispatch", "taken", "open"].includes(w.status));
     const onHold = works.filter(w => ["onhold_parts", "rescheduled", "escalated"].includes(w.status));
 
-    // ✅ Earnings (sum of bill totals)
-    const totalEarnings = completed.reduce((sum, w) => {
-      return sum + (w.billId?.totalAmount || 0);
-    }, 0);
+    const totalEarnings = works.reduce((sum, w) => sum + (w.billId?.totalAmount || 0), 0);
 
-    // ✅ Response structure
     res.status(200).json({
       success: true,
-      message: "Technician work summary fetched successfully",
       summary: {
         total: works.length,
         completed: completed.length,
@@ -325,12 +273,116 @@ exports.getTechnicianSummary = async (req, res) => {
         onHold,
       },
     });
-  } catch (err) {
-    console.error("❌ Technician Summary Error:", err);
+  } catch (error) {
+    console.error("Technician summary error:", error);
+    res.status(500).json({ message: "Server error" });
+  }
+};
+
+exports.getAllTechnicianWorks = async (req, res) => {
+  try {
+    const technicianId = req.user._id;
+
+    // 🔍 Fetch all works assigned to this technician
+    const works = await Work.find({ assignedTechnician: technicianId })
+      .populate("client", "firstName lastName phone email location")
+      .populate("billId")
+      .sort({ createdAt: -1 }); // Latest first
+
+    if (!works.length) {
+      return res.status(200).json({
+        success: true,
+        message: "No works assigned yet",
+        works: [],
+      });
+    }
+
+    // 📊 Optional: categorize works by status (for UI filters)
+    const categorized = {
+      completed: works.filter(w => w.status === "completed"),
+      inProgress: works.filter(w => ["inprogress", "confirm"].includes(w.status)),
+      upcoming: works.filter(w => ["approved", "dispatch", "taken", "open"].includes(w.status)),
+      onHold: works.filter(w => ["onhold_parts", "rescheduled", "escalated"].includes(w.status)),
+    };
+
+    res.status(200).json({
+      success: true,
+      count: works.length,
+      works,
+      categorized,
+    });
+  } catch (error) {
+    console.error("❌ Error fetching all technician works:", error);
     res.status(500).json({
       success: false,
-      message: "Unable to fetch technician summary",
-      error: err.message,
+      message: "Error fetching technician works",
+      error: error.message,
     });
   }
 };
+
+exports.confirmPayment = async (req, res) => {
+  try {
+    const { workId, paymentMethod } = req.body; // "cash" or "upi"
+    const technicianId = req.user._id;
+
+    const work = await Work.findById(workId)
+      .populate("client", "firstName email")
+      .populate("assignedTechnician", "firstName _id");
+
+    if (!work) return res.status(404).json({ message: "Work not found" });
+
+    // ✅ Technician must be assigned to this work
+    if (String(work.assignedTechnician?._id) !== String(technicianId)) {
+      return res.status(403).json({ message: "Unauthorized: not your assigned work" });
+    }
+
+    // ✅ Work must be completed
+    if (work.status !== "completed") {
+      return res.status(400).json({ message: "Work must be completed before confirming payment" });
+    }
+
+    // ✅ Validate payment method
+    if (!["cash", "upi"].includes(paymentMethod)) {
+      return res.status(400).json({ message: "Invalid payment method" });
+    }
+
+    // ✅ Update payment info
+    work.payment = {
+      method: paymentMethod,
+      status: "confirmed",
+      confirmedBy: technicianId,
+      confirmedAt: new Date(),
+      paidAt: work.payment?.paidAt || new Date(), // keep client’s paid time if already set
+    };
+
+    // ✅ Optionally update status
+    work.status = "confirm";
+    await work.save();
+
+    // ✅ (Optional) Send confirmation email to client
+    if (work.client?.email) {
+      await sendEmail(
+        work.client.email,
+        "💰 Payment Confirmed - Thank You!",
+        `
+        <p>Dear ${work.client.firstName || "Customer"},</p>
+        <p>Your payment for <b>Work ID: ${work._id}</b> has been successfully confirmed.</p>
+        <p><b>Payment Method:</b> ${paymentMethod.toUpperCase()}</p>
+        <p>Technician: ${work.assignedTechnician.firstName}</p>
+        <p>Thank you for your trust!</p>
+        `
+      );
+    }
+
+    res.status(200).json({
+      success: true,
+      message: "Payment confirmed successfully by technician.",
+      payment: work.payment,
+    });
+  } catch (err) {
+    console.error("❌ Confirm Payment Error:", err);
+    res.status(500).json({ message: "Server error while confirming payment." });
+  }
+};
+

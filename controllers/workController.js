@@ -31,10 +31,7 @@ exports.createWork = async (req, res) => {
     if (!serviceType || !specialization || !location)
       return res.status(400).json({ message: "Missing required fields" });
 
-    if (!lat || !lng)
-      return res.status(400).json({ message: "Client coordinates (lat, lng) required" });
-
-    // Normalize specialization
+    // 🧩 Normalize specialization
     let specs = [];
     if (typeof specialization === "string") {
       specs = specialization.split(",").map(s => s.trim().toLowerCase()).filter(Boolean);
@@ -44,13 +41,31 @@ exports.createWork = async (req, res) => {
 
     const normalizedLocation = location.trim().toLowerCase();
 
-    //  Save client's coordinates in user document
-    await User.findByIdAndUpdate(clientId, {
-      coordinates: { lat, lng },
-      lastLocationUpdate: new Date()
-    });
+    // 🧍‍♂️ Fetch client details
+    const client = await User.findById(clientId);
+    if (!client) return res.status(404).json({ message: "Client not found" });
 
-    //  Create work with client coordinates
+    // 📍 Determine which coordinates to use
+    let finalLat = lat;
+    let finalLng = lng;
+
+    if (!lat || !lng) {
+      // 🧭 Use client's saved profile location if available
+      if (client.coordinates?.lat && client.coordinates?.lng) {
+        finalLat = client.coordinates.lat;
+        finalLng = client.coordinates.lng;
+      } else {
+        return res.status(400).json({ message: "Location coordinates missing" });
+      }
+    } else {
+      // ✅ If frontend provided new location, update client profile
+      await User.findByIdAndUpdate(clientId, {
+        coordinates: { lat: finalLat, lng: finalLng },
+        lastLocationUpdate: new Date()
+      });
+    }
+
+    // ✅ Create new work (always allowed)
     const work = await Work.create({
       client: clientId,
       serviceType,
@@ -58,25 +73,24 @@ exports.createWork = async (req, res) => {
       description,
       serviceCharge,
       location: normalizedLocation,
-      coordinates: { lat, lng },
+      coordinates: { lat: finalLat, lng: finalLng },
       assignedTechnician: technicianId || null,
       status: technicianId ? "taken" : "open",
       token: `REQ-${new Date().getFullYear()}-${String(Date.now()).slice(-5)}`
     });
 
-    //  Find matching technicians
+    // 🔍 Find matching technicians
     const technicians = await User.find({
       role: "technician",
       specialization: { $in: specs.map(s => new RegExp(s, "i")) },
       location: { $regex: new RegExp(normalizedLocation, "i") }
     }).select("name phone email experience specialization location ratings coordinates");
 
-    //  Attach availability
     const techniciansWithStatus = [];
     for (const tech of technicians) {
       const inWork = await Work.findOne({
         assignedTechnician: tech._id,
-        status: { $in: ["taken", "approved"] }
+        status: { $in: ["taken", "approved", "dispatch", "inprogress"] }
       });
 
       techniciansWithStatus.push({
@@ -84,6 +98,16 @@ exports.createWork = async (req, res) => {
         employeeStatus: inWork ? "in work" : "available"
       });
     }
+
+    // 📨 Send client notification
+    // await sendNotification(
+    //   work.client,
+    //   "client",
+    //   "Work Request Submitted",
+    //   `Your work request (${work.serviceType}) has been successfully submitted.`,
+    //   "success",
+    //   `/client/work/${work._id}`
+    // );
 
     res.status(201).json({
       message: technicianId
@@ -94,21 +118,13 @@ exports.createWork = async (req, res) => {
         ? techniciansWithStatus
         : "No matching technicians found"
     });
-    await sendNotification(
-  work.client,
-  "client",
-  "Work Request Submitted",
-  `Your work request (${work.serviceType}) has been successfully submitted.`,
-  "success",
-  `/client/work/${work._id}`
-);
-
 
   } catch (err) {
     console.error("Work Creation Error:", err);
     res.status(500).json({ message: "Server error" });
   }
 };
+
 
 
 exports.findMatchingTechnicians = async (req, res) => {
@@ -173,25 +189,25 @@ exports.findMatchingTechnicians = async (req, res) => {
       });
 
      
-      await sendNotification(
-        tech._id,
-        "technician",
-        "New Work Request",
-        `New job available: ${serviceType} in ${location}`,
-        "info",
-        `/technician/jobs`
-      );
-    }
+    //   await sendNotification(
+    //     tech._id,
+    //     "technician",
+    //     "New Work Request",
+    //     `New job available: ${serviceType} in ${location}`,
+    //     "info",
+    //     `/technician/jobs`
+    //   );
+     }
 
    
-    await sendNotification(
-      clientId,
-      "client",
-      "Work Request Submitted",
-      `Your request for ${serviceType} has been submitted successfully.`,
-      "success",
-      `/client/work/${work._id}`
-    );
+    // await sendNotification(
+    //   clientId,
+    //   "client",
+    //   "Work Request Submitted",
+    //   `Your request for ${serviceType} has been submitted successfully.`,
+    //   "success",
+    //   `/client/work/${work._id}`
+    // );
 
     res.status(201).json({
       message: "Work request submitted and sent to all matching technicians",
@@ -217,10 +233,9 @@ exports.bookTechnician = async (req, res) => {
     if (!technicianId || !workId)
       return res.status(400).json({ message: "Work ID and Technician ID are required" });
 
- 
+    // 📅 Parse date/time
     let workDate;
     if (date && time) {
-      
       let formattedTime = time;
       if (time.includes("PM") || time.includes("AM")) {
         const parsedTime = new Date(`1970-01-01T${time}`);
@@ -238,28 +253,28 @@ exports.bookTechnician = async (req, res) => {
     if (isNaN(workDate.getTime()))
       return res.status(400).json({ message: "Invalid date or time format" });
 
+    // ✅ Fetch users
     const client = await User.findById(userId);
     if (!client) return res.status(404).json({ message: "Client not found" });
 
     const technician = await User.findById(technicianId);
     if (!technician) return res.status(404).json({ message: "Technician not found" });
 
-    // 🧩 New Check — Same client, same technician, same serviceType & serviceCharge
+    // ⚠️ Only restrict duplicate same technician + same serviceType + same time
     const duplicateBooking = await Booking.findOne({
       user: userId,
       technician: technicianId,
-      serviceType: serviceType,
-      serviceCharge: serviceCharge,
-      status: { $in: ["open", "taken", "dispatch", "inprogress"] }, // still active
+      serviceType,
+      status: { $in: ["open", "taken", "dispatch", "inprogress"] },
     });
 
     if (duplicateBooking) {
       return res.status(400).json({
-        message: `You already booked technician ${technician.name} for ${serviceType} at ₹${serviceCharge}. Please wait for completion or choose another technician.`,
+        message: `You already booked technician ${technician.name} for ${serviceType}. Please choose another technician or wait for completion.`,
       });
     }
 
-    // ⚠️ Check if technician already in other work
+    // ⚠️ Technician availability check
     const conflict = await Work.findOne({
       assignedTechnician: technicianId,
       status: { $in: ["taken", "dispatch", "inprogress"] }
@@ -267,7 +282,7 @@ exports.bookTechnician = async (req, res) => {
     if (conflict)
       return res.status(400).json({ message: "Technician already assigned to another work" });
 
-    // 🧾 Create new booking
+    // ✅ Create booking
     const booking = await Booking.create({
       user: userId,
       technician: technicianId,
@@ -280,22 +295,21 @@ exports.bookTechnician = async (req, res) => {
       status: "open",
     });
 
-    // 🔄 Update work
+    // ✅ Update work
     const updatedWork = await Work.findByIdAndUpdate(
       workId,
       { assignedTechnician: technicianId, status: "taken" },
       { new: true }
     );
-    if (!updatedWork) return res.status(404).json({ message: "Work not found for assignment" });
 
-    // 👷 Update technician
+    // ✅ Update technician status
     await User.findByIdAndUpdate(technicianId, {
       technicianStatus: "dispatched",
       onDuty: true,
       $inc: { totalJobs: 1 },
     });
 
-    // 🗺️ ETA Calculation
+    // 🗺️ ETA
     let etaMessage = "ETA not available";
     const googleKey = process.env.GOOGLE_MAPS_API_KEY;
     const techC = technician.coordinates;
@@ -311,14 +325,13 @@ exports.bookTechnician = async (req, res) => {
         const eta = resp.data?.rows?.[0]?.elements?.[0];
         if (eta?.status === "OK") {
           const minutes = Math.round(eta.duration_in_traffic?.value / 60);
-          etaMessage = `Technician ${technician.name} will arrive in approximately ${minutes} minutes (live traffic ETA).`;
+          etaMessage = `Technician ${technician.name} will arrive in approximately ${minutes} minutes.`;
         }
       } catch (err) {
         console.log("ETA calculation failed:", err.message);
       }
     }
 
-    // ✅ Success
     res.status(201).json({
       message: "Technician booked successfully.",
       booking,
@@ -377,23 +390,23 @@ exports.WorkStart = async (req, res) => {
       onDuty: true,
       availability: false,
     });
-await sendNotification(
-  technicianId,
-  "technician",
-  "Job Status Updated",
-  `You have started work (${work.serviceType}).`,
-  "info",
-  `/technician/work/${work._id}`
-);
+// await sendNotification(
+//   technicianId,
+//   "technician",
+//   "Job Status Updated",
+//   `You have started work (${work.serviceType}).`,
+//   "info",
+//   `/technician/work/${work._id}`
+// );
 
-await sendNotification(
-  work.client,
-  "client",
-  "Work In Progress",
-  `Your job (${work.serviceType}) has been marked as in-progress.`,
-  "info",
-  `/client/work/${work._id}`
-);
+// await sendNotification(
+//   work.client,
+//   "client",
+//   "Work In Progress",
+//   `Your job (${work.serviceType}) has been marked as in-progress.`,
+//   "info",
+//   `/client/work/${work._id}`
+// );
 
     // ✅ Update related booking if any
     await Booking.findOneAndUpdate(
@@ -532,23 +545,23 @@ exports.WorkComplete = async (req, res) => {
       invoice: work.invoice,
       paymentLink,
     });
-    await sendNotification(
-  technicianId,
-  "technician",
-  "Job Completed",
-  `You successfully completed ${work.serviceType}.`,
-  "success",
-  `/technician/work/${work._id}`
-);
+//     await sendNotification(
+//   technicianId,
+//   "technician",
+//   "Job Completed",
+//   `You successfully completed ${work.serviceType}.`,
+//   "success",
+//   `/technician/work/${work._id}`
+// );
 
-await sendNotification(
-  work.client,
-  "client",
-  "Job Completed",
-  `Your job (${work.serviceType}) is completed. Invoice sent via email.`,
-  "success",
-  `/client/work/${work._id}`
-);
+// await sendNotification(
+//   work.client,
+//   "client",
+//   "Job Completed",
+//   `Your job (${work.serviceType}) is completed. Invoice sent via email.`,
+//   "success",
+//   `/client/work/${work._id}`
+// );
 
 
   } catch (err) {
@@ -595,14 +608,14 @@ exports.updateLocation = async (req, res) => {
     work.status = "dispatch";
     await work.save();
 
-    await sendNotification(
-      work.client._id,
-      "client",
-      "Technician on the Way",
-      `${technician.name} is on the way for your ${work.serviceType} service.`,
-      "info",
-      `/client/work/${work._id}`
-    );
+    // await sendNotification(
+    //   work.client._id,
+    //   "client",
+    //   "Technician on the Way",
+    //   `${technician.name} is on the way for your ${work.serviceType} service.`,
+    //   "info",
+    //   `/client/work/${work._id}`
+    // );
 
     res.status(200).json({
       message: "Technician location updated and status set to 'dispatch'.",
@@ -894,18 +907,18 @@ exports.payBill = async (req, res) => {
     // ✅ Update payment info
     work.payment = {
       method: paymentMethod,
-      status: paymentStatus || "paid",
+      status: paymentStatus || "pending",
       paidAt: new Date(),
     };
     await work.save();
-await sendNotification(
-  work.client,
-  "client",
-  "Payment Successful",
-  `Payment received for work ID: ${work._id}`,
-  "success",
-  `/client/work/${work._id}`
-);
+// await sendNotification(
+//   work.client,
+//   "client",
+//   "Payment Successful",
+//   `Payment received for work ID: ${work._id}`,
+//   "success",
+//   `/client/work/${work._id}`
+// );
 
     
     await sendemail(
@@ -924,5 +937,48 @@ await sendNotification(
   } catch (err) {
     console.error("Payment Error:", err);
     res.status(500).json({ message: "Server error" });
+  }
+};
+exports.confirmPayment = async (req, res) => {
+  try {
+    const { workId, paymentMethod } = req.body; // "cash" or "upi"
+    const technicianId = req.user._id;
+
+    const work = await Work.findById(workId)
+      .populate("client", "firstName email")
+      .populate("technician", "firstName _id");
+
+    if (!work) return res.status(404).json({ message: "Work not found" });
+
+    // ✅ Technician must be assigned to this work
+    if (String(work.technician._id) !== String(technicianId))
+      return res.status(403).json({ message: "Unauthorized: not your assigned work" });
+
+    // ✅ Work must be completed
+    if (work.status !== "completed")
+      return res.status(400).json({ message: "Work must be completed before confirming payment" });
+
+    // ✅ Payment method check
+    if (!["cash", "upi"].includes(paymentMethod))
+      return res.status(400).json({ message: "Invalid payment method" });
+
+    // ✅ Save payment info
+    work.payment = {
+      method: paymentMethod,
+      status: "confirmed",
+      confirmedBy: technicianId,
+      confirmedAt: new Date(),
+    };
+    await work.save();
+
+
+
+    res.status(200).json({
+      message: "Payment confirmed successfully.",
+      payment: work.payment,
+    });
+  } catch (err) {
+    console.error("Confirm Payment Error:", err);
+    res.status(500).json({ message: "Server error while confirming payment." });
   }
 };

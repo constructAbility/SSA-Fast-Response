@@ -90,6 +90,14 @@ const workSchema = new mongoose.Schema(
       type: mongoose.Schema.Types.ObjectId,
       ref: "Bill",
     },
+          // 💰 Payment Tracking
+    payment: {
+      method: { type: String, enum: ["cash", "upi"], default: null },
+      status: { type: String, enum: ["pending", "confirmed"], default: "pending" },
+      confirmedBy: { type: mongoose.Schema.Types.ObjectId, ref: "User" }, // technician
+      confirmedAt: { type: Date },
+      paidAt: { type: Date }, // client side payment time
+    },
 
     // 👷 Who completed the work
     completedBy: {

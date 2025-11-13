@@ -35,11 +35,7 @@ adding the section of mejorment in the booking section from client site
 
                 after this give this to technician while check the order 
                         
-<<<<<<< HEAD
-==========================================================================================================
-=======
 
->>>>>>> origin/main
 add the part of technician notification and job taken like approve c
                         - adding/create a controller the part of techinician can check work 
                         - adding approve work once approve work 
@@ -54,6 +50,7 @@ work on client
 adding the socket.io 
     adding the update part 
     
-=======
-  
->>>>>>> origin/main
+
+==============================================================================================================
+update location issue 
+                if technician goes 

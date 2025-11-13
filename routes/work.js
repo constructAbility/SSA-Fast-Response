@@ -31,12 +31,12 @@ router.post('/work/book-technician', protect, bookTechnician);
 router.post('/work/start', protect,upload.single("beforePhoto"), authorize('technician'), WorkStart);
 router.post('/work/complete-1', protect, upload.single("afterphoto"),authorize('technician'),  WorkComplete  );
 
-router.post('/work/complete', protect, authorize('technician'), completeWorkAndGenerateBill  );
+router.post('/work/complete', protect, authorize('technician'),upload.single("afterphoto"), completeWorkAndGenerateBill  );
 router.post('/work/issue', protect, authorize('technician'), reportWorkIssue);
 
 
-router.get('/getAllWork', protect, getAllWorks);
-router.get("/technician/summary", protect , authorize('technician'), getTechnicianSummary);
+router.get('/getAllWork', protect, getAllWorks);// ye clinet ka saare work ko dikhayega 
+// router.get("/technician/summary", protect , authorize('technician'), getTechnicianSummary);
 // router.get('/issuetoadmin',getAdminNotifications);
 
 router.patch('/work/update-location',protect,updateLocation);
