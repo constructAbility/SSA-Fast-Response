@@ -15,7 +15,7 @@ router.get("/available-jobs", protect, technicianController.getAvailableJobs);
 // Approve Job
 router.post("/approve-job", protect, technicianController.approveJob);
 
-
+router.post("/update-location",protect,)
 
 router.post("/payment", protect,authorize('technician') ,technicianController.confirmPayment);
 module.exports = router;

@@ -60,13 +60,10 @@ const workSchema = new mongoose.Schema(
     },
 
     
-
-    beforphoto: { type: String },
-
-    beforphoto: { type: String  },
+beforephoto: { type: String },
+afterphoto: { type: String },
 
 
-    afterphoto: { type: String },
 
     
     invoice: {

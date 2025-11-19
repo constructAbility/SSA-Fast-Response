@@ -40,11 +40,7 @@
   "bugs": {
     "url": "https://github.com/constructAbility/fast_response/issues"
   },
-
-  "homepage": "https://github.com/constructAbility/fast_response#readme",
-
   "homepage": "https://github.com/constructAbility/fast_response#readme",
   "devDependencies": {},
   "type": "commonjs"
-
 }

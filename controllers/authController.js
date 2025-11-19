@@ -51,12 +51,6 @@ exports.registerClient = async (req, res) => {
 
     let user = await User.findOne({ email });
 
-    // If already verified
-    if (user && user.isEmailVerified) {
-      return res.status(400).json({ message: "Email already registered and verified." });
-    }
-
-    // Hash password if new or updating
     const hashedPassword = await bcrypt.hash(password, 10);
 
     if (!user) {
@@ -69,22 +63,20 @@ exports.registerClient = async (req, res) => {
         password: hashedPassword,
       });
     } else {
-      // Update existing unverified record
       user.set({
         firstName,
         lastName,
         phone,
-        password: hashedPassword,
         role: "client",
+        password: hashedPassword,
       });
     }
 
-    // Clear technician fields if exist
+    // Remove technician leftover fields
     user.specialization = undefined;
     user.experience = undefined;
-    user.availability = undefined;
-    user.onDuty = undefined;
-    user.technicianStatus = undefined;
+
+    await user.save();      // important save
 
     await sendVerificationOTP(user, email, firstName);
 
@@ -92,6 +84,7 @@ exports.registerClient = async (req, res) => {
       message: "OTP sent to your email. Verify to complete registration.",
       email,
     });
+
   } catch (err) {
     console.error("❌ Client registration error:", err.message);
     res.status(500).json({ message: "Registration failed. Try again later." });
@@ -119,16 +112,15 @@ exports.registerTechnician = async (req, res) => {
       return res.status(400).json({ message: "Passwords do not match." });
 
     if (!specialization || !experience)
-      return res
-        .status(400)
-        .json({ message: "Specialization and experience are required." });
+      return res.status(400).json({ message: "Specialization and experience are required." });
 
     let user = await User.findOne({ email });
 
-    if (user && user.isEmailVerified)
-      return res.status(400).json({ message: "Email already registered and verified." });
-
     const hashedPassword = await bcrypt.hash(password, 10);
+
+    const specs = Array.isArray(specialization)
+      ? specialization.map((s) => s.trim().toLowerCase())
+      : specialization.split(",").map((s) => s.trim().toLowerCase());
 
     if (!user) {
       user = new User({
@@ -138,9 +130,7 @@ exports.registerTechnician = async (req, res) => {
         phone,
         password: hashedPassword,
         role: "technician",
-        specialization: Array.isArray(specialization)
-          ? specialization.map((s) => s.trim().toLowerCase())
-          : specialization.split(",").map((s) => s.trim().toLowerCase()),
+        specialization: specs,
         experience,
         location,
         availability: true,
@@ -148,15 +138,12 @@ exports.registerTechnician = async (req, res) => {
         technicianStatus: "available",
       });
     } else {
-    
       user.set({
         firstName,
         lastName,
         phone,
         password: hashedPassword,
-        specialization: Array.isArray(specialization)
-          ? specialization.map((s) => s.trim().toLowerCase())
-          : specialization.split(",").map((s) => s.trim().toLowerCase()),
+        specialization: specs,
         experience,
         location,
         availability: true,
@@ -166,12 +153,15 @@ exports.registerTechnician = async (req, res) => {
       });
     }
 
+    await user.save();       // <— VERY IMPORTANT
+
     await sendVerificationOTP(user, email, firstName);
 
     res.status(200).json({
       message: "Technician registration started. OTP sent to your email.",
       email,
     });
+
   } catch (err) {
     console.error("❌ Technician registration error:", err.message);
     res.status(500).json({ message: "Registration failed. Try again later." });
