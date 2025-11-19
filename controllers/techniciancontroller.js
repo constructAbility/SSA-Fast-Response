@@ -6,12 +6,10 @@ const Bill = require("../model/Bill");
 const { generateBillPDF } = require("../utils/Invoice");
 const sendNotification = require("../controllers/nitficationcontrollers");
 const sendEmail = require("../utils/sendemail");
-const { uploadToCloudinary } = require("../utils/cloudinaryUpload");
-
 
 exports.completeWorkAndGenerateBill = async (req, res) => {
   try {
-    const { workId, serviceCharge = 0, paymentMethod = "upi" } = req.body;
+    const { workId, serviceCharge = 0, paymentMethod = "cash", upiId } = req.body;
     const technicianId = req.user._id;
 
     const work = await Work.findById(workId).populate("client");
@@ -24,45 +22,40 @@ exports.completeWorkAndGenerateBill = async (req, res) => {
     const technician = await User.findById(technicianId);
     const client = work.client;
 
+    // 📸 After Photo Required
+    if (!req.file) {
+      return res.status(400).json({ message: "After photo is required" });
+    }
+
+    const uploadedImage = await uploadToCloudinary(req.file.path, "after_photos");
+    work.afterPhoto = uploadedImage.secure_url;
+
+    // 💰 Total Amount
     const totalAmount = Number(serviceCharge);
 
-    // CREATE BILL
+    // ⚡ Generate UPI QR if needed
+    let qrBuffer = null;
+    let upiUri = null;
+
+    if (paymentMethod === "upi") {
+      upiUri = `upi://pay?pa=${upiId}&pn=${technician.firstName}&am=${totalAmount}&cu=INR`;
+
+      qrBuffer = await QRCode.toBuffer(upiUri);
+    }
+
+    // 🧾 Create BILL in DB
     const bill = await Bill.create({
-      workId,
-      technicianId,
-      clientId: client._id,
+      workId: work._id,
+      technician: technicianId,
+      client: client._id,
       serviceCharge,
       totalAmount,
       paymentMethod,
-      status: "sent",
+      status: "pending",
     });
 
-    // -------------------- UPI FLOW --------------------
-    let upiUri = "";
-    let qrBuffer = null;
-    const upiId = process.env.UPI_ID;
-
-    if (paymentMethod === "upi") {
-      const name = encodeURIComponent(technician.firstName);
-
-      // Normal UPI Link
-      upiUri = `upi://pay?pa=${upiId}&pn=${name}&am=${totalAmount}&cu=INR&tn=Service Payment`;
-
-      // CLICKABLE LINK (IMPORTANT)
-      var clickableUPI = `https://upi.me/pay?pa=${upiId}&pn=${name}&am=${totalAmount}&cu=INR&tn=Service%20Payment`;
-
-      // QR Code
-      const qrBase64 = await QRCode.toDataURL(upiUri);
-      qrBuffer = Buffer.from(qrBase64.split(",")[1], "base64");
-
-      bill.upiUri = upiUri;
-      bill.clickableUPI = clickableUPI;
-      bill.qrImage = qrBase64;
-      await bill.save();
-    }
-
-    // -------------------- PDF GENERATE --------------------
-    const { filePath } = await generateBillPDF(
+    // 📄 Generate PDF Invoice
+    await generateBillPDF(
       work,
       technician,
       client,
@@ -73,77 +66,25 @@ exports.completeWorkAndGenerateBill = async (req, res) => {
       upiId
     );
 
-    const pdfBuffer = fs.readFileSync(filePath);
-
-    // email attachments
-    const attachments = [
-      {
-        content: pdfBuffer.toString("base64"),
-        filename: "bill.pdf",
-        type: "application/pdf",
-        disposition: "attachment",
-      }
-    ];
-
-    if (qrBuffer) {
-      attachments.push({
-        content: qrBuffer.toString("base64"),
-        filename: "upi-qr.png",
-        type: "image/png",
-        disposition: "inline",
-        content_id: "qr_code",
-      });
-    }
-
-    // -------------------- EMAIL BODY --------------------
-    const emailBody = `
-      <p>Hello ${client.firstName},</p>
-      <p>Your service <b>${work.serviceType}</b> has been completed.</p>
-      <p><b>Total Amount:</b> ₹${totalAmount}</p>
-
-      ${
-        paymentMethod === "upi"
-          ? `
-            <p><b>Pay Now:</b> 
-              <a href="${clickableUPI}">
-                Click Here to Pay Using UPI
-              </a>
-            </p>
-            <p>Or Scan QR Code:</p>
-            <img src="cid:qr_code" width="200" />
-          `
-          : "<p><b>Payment Mode:</b> Cash</p>"
-      }
-
-      <p>Your bill PDF is attached below.</p>
-      <p>Thank you!</p>
-    `;
-
-    await sendEmail(
-      client.email,
-      "Your Bill & Payment Details",
-      emailBody,
-      attachments
-    );
-
-    // UPDATE WORK
+    // 🔄 Update Work
     work.status = "completed";
     work.completedAt = new Date();
     work.billId = bill._id;
+
     await work.save();
 
     res.status(200).json({
-      message: "Work completed & bill emailed to user.",
+      message: "Work completed, bill created, after photo saved.",
+      afterPhoto: work.afterPhoto,
       bill,
       upiUri,
-      clickableUPI,
     });
 
   } catch (err) {
+    console.error("COMPLETE WORK ERROR:", err);
     res.status(500).json({ message: "Error", error: err.message });
   }
 };
-
 
 exports.getTechnicianSummary1 = async (req, res) => {
   try {
@@ -207,7 +148,7 @@ exports.getTechnicianSummary = async (req, res) => {
     const technicianId = req.user._id;
 
     const works = await Work.find({ technician: technicianId })
-      .populate("client", "name phone email")
+      .populate("client", "fisrtName lastName date phone email location")
       .populate("supervisor", "name")
       .sort({ createdAt: -1 });
 
@@ -408,7 +349,7 @@ exports.confirmPayment = async (req, res) => {
         "💰 Payment Confirmed - Thank You!",
         `
         <p>Dear ${work.client.firstName || "Customer"},</p>
-        <p>Your payment for <b>Work ID: ${work.token}</b> has been successfully confirmed.</p>
+        <p>Your payment for <b>Work ID: ${work._id}</b> has been successfully confirmed.</p>
         <p><b>Payment Method:</b> ${paymentMethod.toUpperCase()}</p>
         <p>Technician: ${work.assignedTechnician.firstName}</p>
         <p>Thank you for your trust!</p>
@@ -424,84 +365,6 @@ exports.confirmPayment = async (req, res) => {
   } catch (err) {
     console.error("❌ Confirm Payment Error:", err);
     res.status(500).json({ message: "Server error while confirming payment." });
-  }
-};
-
-
-exports.updateLocationAndRoutes = async (req, res) => {
-  try {
-    const { lat, lng, selectedRouteIndex } = req.body;
-    const technicianId = req.user._id;
-
-    if (!lat || !lng)
-      return res.status(400).json({ message: "Latitude and longitude required" });
-
-    const work = await Work.findOne({
-      assignedTechnician: technicianId,
-      status: { $in: ["approved", "taken", "dispatch", "inprogress"] },
-    }).populate("client", "coordinates name");
-
-    if (!work) {
-      return res.status(403).json({
-        message: "You cannot update location until work is approved.",
-      });
-    }
-
-    await User.findByIdAndUpdate(technicianId, {
-      coordinates: { lat, lng },
-      lastLocationUpdate: new Date(),
-      onDuty: true
-    });
-
-
-    if (work.status === "approved") {
-      work.status = "dispatch";
-      await work.save();
-    }
-
- 
-    const clientLat = work.coordinates?.lat || work.client.coordinates.lat;
-    const clientLng = work.coordinates?.lng || work.client.coordinates.lng;
-
-    
-    const googleKey = process.env.GOOGLE_MAPS_API_KEY;
-    const url = `https://maps.googleapis.com/maps/api/directions/json?origin=${lat},${lng}&destination=${clientLat},${clientLng}&mode=driving&alternatives=true&key=${googleKey}`;
-
-    const response = await axios.get(url);
-    const data = response.data;
-
-    if (data.status !== "OK") {
-      return res.status(400).json({ message: "Google Directions API Error" });
-    }
-
-    // If technician selected route
-    if (selectedRouteIndex !== undefined) {
-      work.selectedRouteIndex = selectedRouteIndex;
-      await work.save();
-    }
-
-    const finalRouteIndex = work.selectedRouteIndex ?? 0;
-    const finalRoute = data.routes[finalRouteIndex];
-    const leg = finalRoute.legs[0];
-
-    res.status(200).json({
-      message: "Location updated",
-      selectedRouteIndex: finalRouteIndex,
-      eta: leg.duration.text,
-      distance: leg.distance.text,
-      polyline: finalRoute.overview_polyline.points,
-      allRoutes: data.routes.map((r, i) => ({
-        index: i,
-        summary: r.summary,
-        distance: r.legs[0].distance.text,
-        duration: r.legs[0].duration.text,
-        polyline: r.overview_polyline.points,
-      }))
-    });
-
-  } catch (err) {
-    console.error("UpdateLocation+Routes Error:", err);
-    res.status(500).json({ message: "Server error" });
   }
 };
 
