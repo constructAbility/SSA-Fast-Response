@@ -1,2 +1,4 @@
-.env"data.txt" 
-".env" 
+node_modules/
+
+# Environment files
+.env
